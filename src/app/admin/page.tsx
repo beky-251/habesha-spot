@@ -17,13 +17,16 @@ import {
   Loader2,
   LogOut,
   MapPin,
+  MessageSquare,
   RefreshCw,
   Search,
   ShieldCheck,
+  Star,
   XCircle,
 } from "lucide-react";
 
 type BusinessStatus = "pending" | "approved" | "rejected" | string;
+type ReviewStatus = "pending" | "approved" | "rejected";
 
 type Business = {
   id: string;
@@ -53,9 +56,23 @@ type City = {
   name: string;
 };
 
+type Review = {
+  id: string;
+  rating: number;
+  comment: string | null;
+  status: ReviewStatus;
+  created_at: string;
+};
+
 type FilterStatus = "all" | "pending" | "approved" | "rejected";
 
 type ApiError = {
+  error?: string;
+  message?: string;
+};
+
+type ReviewApiResponse = {
+  reviews?: Review[];
   error?: string;
   message?: string;
 };
@@ -81,7 +98,7 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
-function getStatusClasses(status: BusinessStatus): string {
+function getStatusClasses(status: BusinessStatus | ReviewStatus): string {
   switch (status) {
     case "approved":
       return "bg-green-100 text-green-800 ring-green-600/20";
@@ -94,7 +111,11 @@ function getStatusClasses(status: BusinessStatus): string {
   }
 }
 
-function StatusBadge({ status }: { status: BusinessStatus }) {
+function StatusBadge({
+  status,
+}: {
+  status: BusinessStatus | ReviewStatus;
+}) {
   return (
     <span
       className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold capitalize ring-1 ring-inset ${getStatusClasses(
@@ -112,13 +133,16 @@ export default function AdminPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [cities, setCities] = useState<City[]>([]);
+  const [reviews, setReviews] = useState<Review[]>([]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] =
     useState<FilterStatus>("all");
 
   const [loading, setLoading] = useState(true);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
   const [pageError, setPageError] = useState("");
+  const [reviewsError, setReviewsError] = useState("");
   const [actionError, setActionError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [updatingBusinessId, setUpdatingBusinessId] = useState<
@@ -164,9 +188,11 @@ export default function AdminPage() {
           );
         }
 
-        setBusinesses(
-          Array.isArray(data?.businesses) ? data.businesses : []
-        );
+        if (!signal?.aborted) {
+          setBusinesses(
+            Array.isArray(data?.businesses) ? data.businesses : []
+          );
+        }
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
           return;
@@ -174,11 +200,13 @@ export default function AdminPage() {
 
         console.error("Unable to load admin businesses:", error);
 
-        setPageError(
-          error instanceof Error
-            ? error.message
-            : "Unable to load businesses."
-        );
+        if (!signal?.aborted) {
+          setPageError(
+            error instanceof Error
+              ? error.message
+              : "Unable to load businesses."
+          );
+        }
       } finally {
         if (!signal?.aborted) {
           setLoading(false);
@@ -234,27 +262,92 @@ export default function AdminPage() {
     []
   );
 
+  const loadReviewStatistics = useCallback(
+    async (signal?: AbortSignal) => {
+      setReviewsError("");
+
+      try {
+        // The admin reviews page already uses the reviews table and
+        // admin authorization. This dashboard fetches the same data.
+        const response = await fetch("/api/admin/reviews", {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+          cache: "no-store",
+          signal,
+        });
+
+        const data = (await response.json().catch(() => null)) as
+          | ReviewApiResponse
+          | null;
+
+        if (response.status === 401) {
+          router.replace("/login");
+          return;
+        }
+
+        if (response.status === 403) {
+          router.replace("/");
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            getErrorMessage(data, "Unable to load review statistics.")
+          );
+        }
+
+        if (!signal?.aborted) {
+          setReviews(Array.isArray(data?.reviews) ? data.reviews : []);
+        }
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          return;
+        }
+
+        console.error("Unable to load review statistics:", error);
+
+        if (!signal?.aborted) {
+          setReviewsError(
+            error instanceof Error
+              ? error.message
+              : "Unable to load review statistics."
+          );
+        }
+      } finally {
+        if (!signal?.aborted) {
+          setReviewsLoading(false);
+        }
+      }
+    },
+    [router]
+  );
+
   useEffect(() => {
     const controller = new AbortController();
 
-    // Schedule the initial requests after the effect has started.
-    // This avoids synchronous state updates in the effect body.
     const timer = window.setTimeout(() => {
       void loadBusinesses(controller.signal);
       void loadReferenceData(controller.signal);
+      void loadReviewStatistics(controller.signal);
     }, 0);
 
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [loadBusinesses, loadReferenceData]);
+  }, [loadBusinesses, loadReferenceData, loadReviewStatistics]);
 
-  const refreshBusinesses = useCallback(() => {
+  const refreshDashboard = useCallback(() => {
     startRefreshTransition(() => {
-      void loadBusinesses();
+      void Promise.all([
+        loadBusinesses(),
+        loadReferenceData(),
+        loadReviewStatistics(),
+      ]);
     });
-  }, [loadBusinesses]);
+  }, [loadBusinesses, loadReferenceData, loadReviewStatistics]);
 
   const updateBusinessStatus = useCallback(
     async (business: Business, status: "approved" | "rejected") => {
@@ -357,7 +450,10 @@ export default function AdminPage() {
   );
 
   const categoryNames = useMemo(
-    () => new Map(categories.map((category) => [category.id, category.name])),
+    () =>
+      new Map(
+        categories.map((category) => [category.id, category.name])
+      ),
     [categories]
   );
 
@@ -407,7 +503,7 @@ export default function AdminPage() {
     cityNames,
   ]);
 
-  const statistics = useMemo(
+  const businessStatistics = useMemo(
     () => ({
       total: businesses.length,
       pending: businesses.filter((item) => item.status === "pending")
@@ -420,26 +516,48 @@ export default function AdminPage() {
     [businesses]
   );
 
+  const reviewStatistics = useMemo(
+    () => ({
+      total: reviews.length,
+      pending: reviews.filter((review) => review.status === "pending")
+        .length,
+      approved: reviews.filter((review) => review.status === "approved")
+        .length,
+      rejected: reviews.filter((review) => review.status === "rejected")
+        .length,
+      averageRating:
+        reviews.length > 0
+          ? reviews.reduce((sum, review) => sum + review.rating, 0) /
+            reviews.length
+          : 0,
+    }),
+    [reviews]
+  );
+
   const filterButtons: {
     label: string;
     value: FilterStatus;
     count: number;
   }[] = [
-    { label: "All businesses", value: "all", count: statistics.total },
+    {
+      label: "All businesses",
+      value: "all",
+      count: businessStatistics.total,
+    },
     {
       label: "Pending",
       value: "pending",
-      count: statistics.pending,
+      count: businessStatistics.pending,
     },
     {
       label: "Approved",
       value: "approved",
-      count: statistics.approved,
+      count: businessStatistics.approved,
     },
     {
       label: "Rejected",
       value: "rejected",
-      count: statistics.rejected,
+      count: businessStatistics.rejected,
     },
   ];
 
@@ -463,13 +581,15 @@ export default function AdminPage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={refreshBusinesses}
-              disabled={loading || isRefreshing}
+              onClick={refreshDashboard}
+              disabled={loading || reviewsLoading || isRefreshing}
               className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <RefreshCw
                 className={`h-4 w-4 ${
-                  loading || isRefreshing ? "animate-spin" : ""
+                  loading || reviewsLoading || isRefreshing
+                    ? "animate-spin"
+                    : ""
                 }`}
               />
               <span className="hidden sm:inline">Refresh</span>
@@ -488,19 +608,29 @@ export default function AdminPage() {
       </header>
 
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="mb-8">
-          <p className="text-sm font-semibold uppercase tracking-wider text-emerald-700">
-            Management
-          </p>
+        <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wider text-emerald-700">
+              Management
+            </p>
 
-          <h1 className="mt-2 text-3xl font-bold tracking-tight">
-            Business approvals
-          </h1>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight">
+              Admin dashboard
+            </h1>
 
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-600">
-            Review submitted businesses, approve eligible listings, and
-            reject submissions that do not meet your requirements.
-          </p>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-600">
+              Manage business submissions, monitor customer reviews, and
+              keep HabeshaSpot listings trustworthy.
+            </p>
+          </div>
+
+          <Link
+            href="/admin/reviews"
+            className="inline-flex w-fit items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-800"
+          >
+            <MessageSquare className="h-4 w-4" />
+            Manage reviews
+          </Link>
         </div>
 
         {pageError && (
@@ -518,7 +648,7 @@ export default function AdminPage() {
 
               <button
                 type="button"
-                onClick={refreshBusinesses}
+                onClick={refreshDashboard}
                 className="mt-3 text-sm font-semibold underline"
               >
                 Try again
@@ -553,31 +683,106 @@ export default function AdminPage() {
         >
           <StatCard
             label="Total businesses"
-            value={statistics.total}
+            value={businessStatistics.total}
             icon={<Building2 className="h-5 w-5" />}
             description="All submissions"
           />
 
           <StatCard
-            label="Awaiting review"
-            value={statistics.pending}
+            label="Awaiting business review"
+            value={businessStatistics.pending}
             icon={<Clock className="h-5 w-5" />}
             description="Need your attention"
           />
 
           <StatCard
-            label="Approved"
-            value={statistics.approved}
+            label="Approved businesses"
+            value={businessStatistics.approved}
             icon={<CheckCircle2 className="h-5 w-5" />}
             description="Approved listings"
           />
 
           <StatCard
-            label="Rejected"
-            value={statistics.rejected}
+            label="Rejected businesses"
+            value={businessStatistics.rejected}
             icon={<XCircle className="h-5 w-5" />}
             description="Rejected submissions"
           />
+        </section>
+
+        <section
+          aria-label="Review statistics"
+          className="mb-8 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6"
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5 text-emerald-700" />
+                <h2 className="text-lg font-bold">Customer reviews</h2>
+              </div>
+
+              <p className="mt-1 text-sm text-gray-500">
+                Review moderation overview
+              </p>
+            </div>
+
+            <Link
+              href="/admin/reviews"
+              className="inline-flex w-fit items-center gap-2 rounded-lg border border-emerald-200 px-4 py-2.5 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
+            >
+              Open review manager
+              <span aria-hidden="true">→</span>
+            </Link>
+          </div>
+
+          {reviewsError && (
+            <div
+              role="alert"
+              className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+            >
+              Could not load review statistics: {reviewsError}
+              <p className="mt-1">
+                The review manager may still be available.
+              </p>
+            </div>
+          )}
+
+          <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <StatCard
+              label="Total reviews"
+              value={reviewsLoading ? 0 : reviewStatistics.total}
+              icon={<MessageSquare className="h-5 w-5" />}
+              description={reviewsLoading ? "Loading reviews..." : "All reviews"}
+            />
+
+            <StatCard
+              label="Pending reviews"
+              value={reviewsLoading ? 0 : reviewStatistics.pending}
+              icon={<Clock className="h-5 w-5" />}
+              description="Awaiting moderation"
+            />
+
+            <StatCard
+              label="Approved reviews"
+              value={reviewsLoading ? 0 : reviewStatistics.approved}
+              icon={<CheckCircle2 className="h-5 w-5" />}
+              description="Visible to customers"
+            />
+
+            <StatCard
+              label="Rejected reviews"
+              value={reviewsLoading ? 0 : reviewStatistics.rejected}
+              icon={<XCircle className="h-5 w-5" />}
+              description="Not published"
+            />
+
+            <StatCard
+              label="Average rating"
+              value={reviewsLoading ? 0 : Number(reviewStatistics.averageRating.toFixed(1))}
+              icon={<Star className="h-5 w-5" />}
+              description="Across all reviews"
+            />
+          </div>
         </section>
 
         <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
@@ -719,7 +924,9 @@ export default function AdminPage() {
                             </span>
                           )}
 
-                          <span>Submitted {formatDate(business.created_at)}</span>
+                          <span>
+                            Submitted {formatDate(business.created_at)}
+                          </span>
                         </div>
 
                         {business.address && (

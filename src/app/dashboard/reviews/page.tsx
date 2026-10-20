@@ -1,789 +1,673 @@
 "use client";
 
-import {
-Suspense,
-useCallback,
-useEffect,
-useState,
-} from "react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { useRouter } from "next/navigation";
 
-type Review = {
-id: string;
-business_id: string;
-user_id: string;
-rating: number;
-comment: string | null;
-status: string;
-created_at: string;
-};
 
 type Business = {
-id: string;
-name: string;
-slug: string;
-owner_user_id: string;
+  id: string;
+  name: string;
+  status: string;
+};
+
+type Review = {
+  id: string;
+  business_id: string;
+  user_id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  status: string;
 };
 
 type ReviewReply = {
-id: string;
-review_id: string;
-business_id: string;
-owner_user_id: string;
-reply: string;
-created_at: string;
-updated_at: string;
+  id: string;
+  review_id: string;
+  business_id: string;
+  owner_user_id: string;
+  reply: string;
+  created_at: string;
+  updated_at: string;
 };
 
-type ReviewWithDetails = Review & {
-business: Business;
-ownerReply: ReviewReply | null;
+type Reviewer = {
+  id: string;
+  full_name?: string | null;
+  name?: string | null;
 };
 
-type FilterType = "all" | "positive" | "low";
+type ReviewItem = {
+  review: Review;
+  business: Business;
+  reviewer: Reviewer | null;
+  reply: ReviewReply | null;
+};
 
 export default function DashboardReviewsPage() {
-return (
-<Suspense
-fallback={ <main className="min-h-screen bg-gray-50 px-4 py-10"> <div className="mx-auto max-w-5xl rounded-2xl border border-gray-200 bg-white p-8">
-Loading reviews... </div> </main>
-}
-> <DashboardReviewsContent /> </Suspense>
-);
-}
+  const [items, setItems] = useState<ReviewItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [pageError, setPageError] = useState("");
+  const [notice, setNotice] = useState("");
+  const router = useRouter();
 
-function DashboardReviewsContent() {
-const [supabase] = useState(() => createClient());
-const searchParams = useSearchParams();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [editingIds, setEditingIds] = useState<string[]>([]);
+  const [savingIds, setSavingIds] = useState<string[]>([]);
 
-const requestedReviewId = searchParams.get("reviewId");
+  const loadReviews = useCallback(async () => {
+    setLoading(true);
+    setPageError("");
 
-const [reviews, setReviews] = useState<ReviewWithDetails[]>([]);
-const [loading, setLoading] = useState(true);
-const [error, setError] = useState("");
-const [success, setSuccess] = useState("");
-const [filter, setFilter] = useState<FilterType>("all");
-const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
-const [savingReviewId, setSavingReviewId] = useState<string | null>(null);
-const [deletingReviewId, setDeletingReviewId] = useState<string | null>(null);
-const [editingReviewId, setEditingReviewId] = useState<string | null>(null);
+    try {
+      const supabase = createClient();
 
-const loadReviews = useCallback(async () => {
-setLoading(true);
-setError("");
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
 
-try {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError) {
-    throw authError;
-  }
-
-  if (!user) {
-    setReviews([]);
-    setError("Please sign in to view your business reviews.");
-    return;
-  }
-
-  const { data: businesses, error: businessesError } = await supabase
-    .from("businesses")
-    .select("id, name, slug, owner_user_id")
-    .eq("owner_user_id", user.id);
-
-  if (businessesError) {
-    throw businessesError;
-  }
-
-  const ownedBusinesses = (businesses ?? []) as Business[];
-
-  if (ownedBusinesses.length === 0) {
-    setReviews([]);
-    return;
-  }
-
-  const businessIds = ownedBusinesses.map((business) => business.id);
-
-  const { data: reviewData, error: reviewsError } = await supabase
-    .from("reviews")
-    .select(
-      "id, business_id, user_id, rating, comment, status, created_at",
-    )
-    .in("business_id", businessIds)
-    .order("created_at", { ascending: false });
-
-  if (reviewsError) {
-    throw reviewsError;
-  }
-
-  const fetchedReviews = (reviewData ?? []) as Review[];
-
-  if (fetchedReviews.length === 0) {
-    setReviews([]);
-    setReplyDrafts({});
-    return;
-  }
-
-  const reviewIds = fetchedReviews.map((review) => review.id);
-
-  const { data: replyData, error: repliesError } = await supabase
-    .from("review_replies")
-    .select(
-      "id, review_id, business_id, owner_user_id, reply, created_at, updated_at",
-    )
-    .in("review_id", reviewIds);
-
-  if (repliesError) {
-    throw repliesError;
-  }
-
-  const replyMap = new Map<string, ReviewReply>();
-
-  for (const reply of (replyData ?? []) as ReviewReply[]) {
-    replyMap.set(reply.review_id, reply);
-  }
-
-  const businessMap = new Map(
-    ownedBusinesses.map((business) => [business.id, business]),
-  );
-
-  const detailedReviews: ReviewWithDetails[] = fetchedReviews
-    .map((review) => {
-      const business = businessMap.get(review.business_id);
-
-      if (!business) {
-        return null;
+      if (authError || !user) {
+        router.push("/login");
+        return;
       }
 
-      return {
-        ...review,
-        business,
-        ownerReply: replyMap.get(review.id) ?? null,
-      };
-    })
-    .filter(
-      (review): review is ReviewWithDetails => review !== null,
-    );
+      const { data: businessesData, error: businessesError } = await supabase
+        .from("businesses")
+        .select("id, name, status")
+        .eq("owner_user_id", user.id);
 
-  setReviews(detailedReviews);
-
-  setReplyDrafts((previous) => {
-    const next = { ...previous };
-
-    for (const review of detailedReviews) {
-      if (!(review.id in next)) {
-        next[review.id] = review.ownerReply?.reply ?? "";
+      if (businessesError) {
+        throw new Error(businessesError.message);
       }
+
+      const businesses = (businessesData ?? []) as Business[];
+
+      if (businesses.length === 0) {
+        setItems([]);
+        return;
+      }
+
+      const businessIds = businesses.map((business) => business.id);
+
+      const { data: reviewsData, error: reviewsError } = await supabase
+        .from("reviews")
+        .select("id, business_id, user_id, rating, comment, created_at, status")
+        .in("business_id", businessIds)
+        .eq("status", "approved")
+        .order("created_at", { ascending: false });
+
+      if (reviewsError) {
+        throw new Error(reviewsError.message);
+      }
+
+      const reviews = (reviewsData ?? []) as Review[];
+
+      if (reviews.length === 0) {
+        setItems([]);
+        return;
+      }
+
+      const reviewIds = reviews.map((review) => review.id);
+      const reviewerIds = [...new Set(reviews.map((review) => review.user_id))];
+
+      const [
+        { data: repliesData, error: repliesError },
+        { data: profilesData, error: profilesError },
+      ] = await Promise.all([
+        supabase
+          .from("review_replies")
+          .select(
+            "id, review_id, business_id, owner_user_id, reply, created_at, updated_at",
+          )
+          .in("review_id", reviewIds),
+
+        supabase
+          .from("profiles")
+          .select("id, full_name, name")
+          .in("id", reviewerIds),
+      ]);
+
+      if (repliesError) {
+        throw new Error(repliesError.message);
+      }
+
+      if (profilesError) {
+        throw new Error(profilesError.message);
+      }
+
+      const replies = (repliesData ?? []) as ReviewReply[];
+      const reviewers = (profilesData ?? []) as Reviewer[];
+
+      const businessMap = new Map(
+        businesses.map((business) => [business.id, business]),
+      );
+
+      const replyMap = new Map(
+        replies.map((reply) => [reply.review_id, reply]),
+      );
+
+      const reviewerMap = new Map(
+        reviewers.map((reviewer) => [reviewer.id, reviewer]),
+      );
+
+      const nextItems = reviews
+        .map((review) => {
+          const business = businessMap.get(review.business_id);
+
+          if (!business) {
+            return null;
+          }
+
+          return {
+            review,
+            business,
+            reviewer: reviewerMap.get(review.user_id) ?? null,
+            reply: replyMap.get(review.id) ?? null,
+          };
+        })
+        .filter((item): item is ReviewItem => item !== null);
+
+      setItems(nextItems);
+
+      setDrafts((previous) => {
+        const next = { ...previous };
+
+        for (const item of nextItems) {
+          if (!(item.review.id in next)) {
+            next[item.review.id] = item.reply?.reply ?? "";
+          }
+        }
+
+        return next;
+      });
+    } catch (error) {
+      setPageError(
+        error instanceof Error ? error.message : "Unable to load your reviews.",
+      );
+    } finally {
+      setLoading(false);
     }
+  }, [router]);
 
-    return next;
-  });
-} catch (err) {
-  console.error("Failed to load reviews:", err);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadReviews();
+    }, 0);
 
-  setError(
-    err instanceof Error
-      ? err.message
-      : "Unable to load reviews. Please try again.",
-  );
-} finally {
-  setLoading(false);
-}
+    return () => window.clearTimeout(timer);
+  }, [loadReviews]);
 
-}, [supabase]);
-
-useEffect(() => {
-  let cancelled = false;
-
-  const load = async () => {
-    if (cancelled) return;
-
-    await loadReviews();
-  };
-
-  void load();
-
-  return () => {
-    cancelled = true;
-  };
-}, [loadReviews]);
-
-
-// Scroll to the review selected by a notification after reviews load.
-useEffect(() => {
-if (!requestedReviewId || loading) {
-return;
-}
-
-
-const timer = window.setTimeout(() => {
-  const element = document.getElementById(
-    `review-${requestedReviewId}`,
-  );
-
-  element?.scrollIntoView({
-    behavior: "smooth",
-    block: "center",
-  });
-}, 150);
-
-return () => {
-  window.clearTimeout(timer);
-};
-
-}, [requestedReviewId, loading, reviews]);
-
-async function saveReply(review: ReviewWithDetails) {
-const replyText = (replyDrafts[review.id] ?? "").trim();
-
-
-setError("");
-setSuccess("");
-
-if (!replyText) {
-  setError("Please enter a reply before saving.");
-  return;
-}
-
-if (replyText.length > 2000) {
-  setError("Replies cannot exceed 2,000 characters.");
-  return;
-}
-
-setSavingReviewId(review.id);
-
-try {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError) {
-    throw authError;
+  function updateDraft(reviewId: string, value: string) {
+    setDrafts((previous) => ({
+      ...previous,
+      [reviewId]: value,
+    }));
   }
 
-  if (!user) {
-    throw new Error("Your session has expired. Please sign in again.");
-  }
-
-  if (review.business.owner_user_id !== user.id) {
-    throw new Error(
-      "You can only reply to reviews for your own business.",
+  function setSaving(reviewId: string, saving: boolean) {
+    setSavingIds((previous) =>
+      saving
+        ? [...new Set([...previous, reviewId])]
+        : previous.filter((id) => id !== reviewId),
     );
   }
 
-  if (review.ownerReply) {
-    const { error: updateError } = await supabase
-      .from("review_replies")
-      .update({
-        reply: replyText,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", review.ownerReply.id)
-      .eq("owner_user_id", user.id);
+  function toggleEditing(reviewId: string, editing: boolean) {
+    setEditingIds((previous) =>
+      editing
+        ? [...new Set([...previous, reviewId])]
+        : previous.filter((id) => id !== reviewId),
+    );
+  }
 
-    if (updateError) {
-      throw updateError;
+  async function saveReply(item: ReviewItem) {
+    const reviewId = item.review.id;
+    const replyText = (drafts[reviewId] ?? "").trim();
+
+    setNotice("");
+    setPageError("");
+
+    if (!replyText) {
+      setPageError("Please enter a reply before saving.");
+      return;
     }
-  } else {
-    const { error: insertError } = await supabase
-      .from("review_replies")
-      .insert({
-        review_id: review.id,
-        business_id: review.business_id,
-        owner_user_id: user.id,
-        reply: replyText,
+
+    if (replyText.length > 2000) {
+      setPageError("Your reply cannot exceed 2,000 characters.");
+      return;
+    }
+
+    setSaving(reviewId, true);
+
+    try {
+      const isEditing = Boolean(item.reply);
+
+      const response = await fetch(
+        isEditing
+          ? `/api/review-replies/${item.reply!.id}`
+          : "/api/review-replies",
+        {
+          method: isEditing ? "PATCH" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(
+            isEditing
+              ? { reply: replyText }
+              : {
+                  review_id: reviewId,
+                  business_id: item.business.id,
+                  reply: replyText,
+                },
+          ),
+        },
+      );
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          result?.error || "Unable to save your reply. Please try again.",
+        );
+      }
+
+      setNotice(
+        isEditing
+          ? "Your reply has been updated."
+          : "Your reply has been published.",
+      );
+
+      toggleEditing(reviewId, false);
+
+      await loadReviews();
+    } catch (error) {
+      setPageError(
+        error instanceof Error ? error.message : "Unable to save your reply.",
+      );
+    } finally {
+      setSaving(reviewId, false);
+    }
+  }
+
+  async function deleteReply(item: ReviewItem) {
+    if (!item.reply) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Are you sure you want to delete this reply?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setNotice("");
+    setPageError("");
+    setSaving(item.review.id, true);
+
+    try {
+      const response = await fetch(`/api/review-replies/${item.reply.id}`, {
+        method: "DELETE",
       });
 
-    if (insertError) {
-      throw insertError;
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(result?.error || "Unable to delete your reply.");
+      }
+
+      setNotice("Your reply has been deleted.");
+
+      setDrafts((previous) => ({
+        ...previous,
+        [item.review.id]: "",
+      }));
+
+      toggleEditing(item.review.id, false);
+
+      await loadReviews();
+    } catch (error) {
+      setPageError(
+        error instanceof Error ? error.message : "Unable to delete your reply.",
+      );
+    } finally {
+      setSaving(item.review.id, false);
     }
   }
 
-  setEditingReviewId(null);
-  setSuccess("Your reply was saved successfully.");
+  const averageRating =
+    items.length > 0
+      ? items.reduce((total, item) => total + item.review.rating, 0) /
+        items.length
+      : 0;
 
-  await loadReviews();
-} catch (err) {
-  console.error("Failed to save review reply:", err);
+  const repliedCount = items.filter((item) => item.reply).length;
+  const pendingReplyCount = items.length - repliedCount;
 
-  setError(
-    err instanceof Error ? err.message : "Unable to save your reply.",
-  );
-} finally {
-  setSavingReviewId(null);
-}
-
-}
-
-async function deleteReply(review: ReviewWithDetails) {
-if (!review.ownerReply) {
-return;
-}
-
-
-const confirmed = window.confirm(
-  "Are you sure you want to delete this reply?",
-);
-
-if (!confirmed) {
-  return;
-}
-
-setError("");
-setSuccess("");
-setDeletingReviewId(review.id);
-
-try {
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError) {
-    throw authError;
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-gray-50 px-4 py-12">
+        {" "}
+        <div className="mx-auto max-w-5xl">
+          {" "}
+          <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center">
+            {" "}
+            <p className="text-sm text-gray-600">
+              Loading your customer reviews...{" "}
+            </p>{" "}
+          </div>{" "}
+        </div>{" "}
+      </main>
+    );
   }
 
-  if (!user || user.id !== review.business.owner_user_id) {
-    throw new Error("You are not authorized to delete this reply.");
-  }
+  return (
+    <main className="min-h-screen bg-gray-50 px-4 py-8 sm:px-6 lg:px-8">
+      {" "}
+      <div className="mx-auto max-w-5xl">
+        {" "}
+        <header className="mb-8">
+          {" "}
+          <Link
+            href="/dashboard"
+            className="mb-4 inline-flex items-center text-sm font-medium text-gray-600 hover:text-gray-900"
+          >
+            ← Back to dashboard{" "}
+          </Link>
+          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-wide text-orange-600">
+                Business dashboard
+              </p>
 
-  const { error: deleteError } = await supabase
-    .from("review_replies")
-    .delete()
-    .eq("id", review.ownerReply.id)
-    .eq("owner_user_id", user.id);
+              <h1 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">
+                Customer reviews
+              </h1>
 
-  if (deleteError) {
-    throw deleteError;
-  }
+              <p className="mt-2 max-w-2xl text-gray-600">
+                Read customer feedback and respond to reviews of your
+                businesses.
+              </p>
+            </div>
 
-  setReplyDrafts((previous) => ({
-    ...previous,
-    [review.id]: "",
-  }));
-
-  setEditingReviewId(null);
-  setSuccess("Your reply was deleted.");
-
-  await loadReviews();
-} catch (err) {
-  console.error("Failed to delete reply:", err);
-
-  setError(
-    err instanceof Error ? err.message : "Unable to delete your reply.",
-  );
-} finally {
-  setDeletingReviewId(null);
-}
-
-}
-
-const visibleReviews = reviews.filter((review) => {
-// Always include the notification's target review, regardless of filter.
-if (review.id === requestedReviewId) {
-return true;
-}
-
-if (filter === "positive") {
-  return review.rating >= 4;
-}
-
-if (filter === "low") {
-  return review.rating <= 3;
-}
-
-return true;
-
-});
-
-const averageRating =
-reviews.length > 0
-? reviews.reduce((sum, review) => sum + review.rating, 0) /
-reviews.length
-: 0;
-
-const positiveReviews = reviews.filter(
-(review) => review.rating >= 4,
-).length;
-
-const repliedCount = reviews.filter(
-(review) => review.ownerReply !== null,
-).length;
-
-const requestedReviewExists = reviews.some(
-(review) => review.id === requestedReviewId,
-);
-
-return ( <main className="min-h-screen bg-gray-50 px-4 py-8 text-gray-900 sm:px-6 lg:px-8"> <div className="mx-auto max-w-5xl"> <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center"> <div> <Link
-           href="/dashboard"
-           className="mb-3 inline-flex text-sm font-medium text-gray-600 hover:text-gray-900"
-         >
-← Back to dashboard </Link>
-        <h1 className="text-3xl font-bold tracking-tight">
-          Customer Reviews
-        </h1>
-
-        <p className="mt-2 text-gray-600">
-          Read customer feedback and respond to reviews for your businesses.
-        </p>
-      </div>
-
-      <button
-        type="button"
-        onClick={() => void loadReviews()}
-        disabled={loading}
-        className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {loading ? "Refreshing..." : "Refresh reviews"}
-      </button>
-    </div>
-
-    {requestedReviewId && !loading && !requestedReviewExists && (
-      <div
-        role="status"
-        className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
-      >
-        The requested review could not be found among the reviews available
-        to your account. It may have been deleted, or the business may not
-        belong to your account.
-      </div>
-    )}
-
-    {error && (
-      <div
-        role="alert"
-        className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
-      >
-        {error}
-      </div>
-    )}
-
-    {success && (
-      <div
-        role="status"
-        className="mb-5 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800"
-      >
-        {success}
-      </div>
-    )}
-
-    <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <StatCard label="Total reviews" value={reviews.length.toString()} />
-      <StatCard
-        label="Average rating"
-        value={`${averageRating.toFixed(1)} / 5`}
-      />
-      <StatCard
-        label="Positive reviews"
-        value={positiveReviews.toString()}
-      />
-      <StatCard
-        label="Replies posted"
-        value={`${repliedCount} / ${reviews.length}`}
-      />
-    </section>
-
-    <section className="mb-5 flex flex-wrap gap-2">
-      <FilterButton
-        active={filter === "all"}
-        onClick={() => setFilter("all")}
-      >
-        All reviews
-      </FilterButton>
-
-      <FilterButton
-        active={filter === "positive"}
-        onClick={() => setFilter("positive")}
-      >
-        Positive (4–5 ★)
-      </FilterButton>
-
-      <FilterButton
-        active={filter === "low"}
-        onClick={() => setFilter("low")}
-      >
-        Needs attention (1–3 ★)
-      </FilterButton>
-    </section>
-
-    {loading ? (
-      <div className="rounded-2xl border border-gray-200 bg-white p-10 text-center text-gray-500">
-        Loading reviews...
-      </div>
-    ) : visibleReviews.length === 0 ? (
-      <div className="rounded-2xl border border-gray-200 bg-white p-10 text-center">
-        <div className="text-4xl" aria-hidden="true">
-          ⭐
-        </div>
-
-        <h2 className="mt-4 text-lg font-semibold">
-          {reviews.length === 0
-            ? "No reviews yet"
-            : "No reviews match this filter"}
-        </h2>
-
-        <p className="mt-2 text-sm text-gray-600">
-          {reviews.length === 0
-            ? "Customer reviews for your businesses will appear here."
-            : "Choose another filter to see more reviews."}
-        </p>
-      </div>
-    ) : (
-      <div className="space-y-5">
-        {visibleReviews.map((review) => {
-          const isEditing = editingReviewId === review.id;
-          const hasReply = Boolean(review.ownerReply);
-          const isSaving = savingReviewId === review.id;
-          const isDeleting = deletingReviewId === review.id;
-          const isRequestedReview = review.id === requestedReviewId;
-
-          return (
-            <article
-              key={review.id}
-              id={`review-${review.id}`}
-              aria-label={
-                isRequestedReview
-                  ? "Review opened from notification"
-                  : undefined
-              }
-              className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm transition-colors duration-500 sm:p-6 ${
-                isRequestedReview
-                  ? "border-orange-400 bg-orange-50 ring-2 ring-orange-300"
-                  : "border-gray-200 bg-white"
-              }`}
+            <button
+              type="button"
+              onClick={() => void loadReviews()}
+              className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-100"
             >
-              {isRequestedReview && (
-                <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-orange-100 px-3 py-1.5 text-sm font-semibold text-orange-800">
-                  <span aria-hidden="true">🔔</span>
-                  Opened from your notification
-                </div>
+              Refresh reviews
+            </button>
+          </div>
+        </header>
+        {pageError && (
+          <div
+            role="alert"
+            className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+          >
+            {pageError}
+          </div>
+        )}
+        {notice && (
+          <div
+            role="status"
+            className="mb-5 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700"
+          >
+            {notice}
+          </div>
+        )}
+        <section className="mb-8 grid gap-4 sm:grid-cols-3">
+          <div className="rounded-2xl border border-gray-200 bg-white p-5">
+            <p className="text-sm text-gray-500">Approved reviews</p>
+            <p className="mt-2 text-3xl font-bold text-gray-900">
+              {items.length}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-gray-200 bg-white p-5">
+            <p className="text-sm text-gray-500">Replies written</p>
+            <p className="mt-2 text-3xl font-bold text-gray-900">
+              {repliedCount}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-gray-200 bg-white p-5">
+            <p className="text-sm text-gray-500">Average rating</p>
+            <p className="mt-2 text-3xl font-bold text-gray-900">
+              {items.length > 0 ? averageRating.toFixed(1) : "—"}
+              {items.length > 0 && (
+                <span className="ml-1 text-lg text-amber-500">★</span>
               )}
+            </p>
+          </div>
+        </section>
+        {items.length === 0 ? (
+          <section className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-16 text-center">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-orange-50 text-2xl">
+              ★
+            </div>
 
-              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-                <div>
-                  <Link
-                    href={`/business/${review.business.slug}`}
-                    className="font-semibold text-gray-900 hover:text-blue-700"
-                  >
-                    {review.business.name}
-                  </Link>
+            <h2 className="mt-4 text-xl font-semibold text-gray-900">
+              No approved reviews yet
+            </h2>
 
-                  <p className="mt-1 text-sm text-gray-500">
-                    {new Date(review.created_at).toLocaleDateString(
-                      undefined,
-                      {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                      },
-                    )}
-                  </p>
-                </div>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-600">
+              Approved customer reviews for your businesses will appear here.
+              You can reply to each review once it becomes visible.
+            </p>
 
-                <div
-                  className="flex items-center gap-1 text-amber-500"
-                  aria-label={`Rating: ${review.rating} out of 5`}
+            <Link
+              href="/dashboard"
+              className="mt-6 inline-flex rounded-xl bg-orange-600 px-5 py-3 text-sm font-semibold text-white hover:bg-orange-700"
+            >
+              Return to dashboard
+            </Link>
+          </section>
+        ) : (
+          <section className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-gray-900">
+                Your reviews
+              </h2>
+
+              <p className="text-sm text-gray-500">
+                {pendingReplyCount}{" "}
+                {pendingReplyCount === 1 ? "review needs" : "reviews need"} a
+                reply
+              </p>
+            </div>
+
+            {items.map((item) => {
+              const reviewId = item.review.id;
+              const isEditing = editingIds.includes(reviewId);
+              const isSaving = savingIds.includes(reviewId);
+              const reviewerName =
+                item.reviewer?.full_name?.trim() ||
+                item.reviewer?.name?.trim() ||
+                "Customer";
+
+              return (
+                <article
+                  key={reviewId}
+                  className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm"
                 >
-                  {Array.from({ length: 5 }, (_, index) => (
-                    <span
-                      key={index}
-                      className={
-                        index < review.rating
-                          ? "text-amber-500"
-                          : "text-gray-300"
-                      }
-                    >
-                      ★
-                    </span>
-                  ))}
+                  <div className="border-b border-gray-100 p-5 sm:p-6">
+                    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                      <div>
+                        <p className="text-sm font-medium text-orange-700">
+                          {item.business.name}
+                        </p>
 
-                  <span className="ml-2 text-sm font-semibold text-gray-700">
-                    {review.rating}/5
-                  </span>
-                </div>
-              </div>
+                        <h3 className="mt-1 text-lg font-semibold text-gray-900">
+                          {reviewerName}
+                        </h3>
 
-              <div className="mt-5">
-                <h2 className="text-sm font-semibold text-gray-700">
-                  Customer feedback
-                </h2>
+                        <p className="mt-1 text-xs text-gray-500">
+                          {new Date(item.review.created_at).toLocaleDateString(
+                            undefined,
+                            {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            },
+                          )}
+                        </p>
+                      </div>
 
-                <p className="mt-2 whitespace-pre-wrap leading-7 text-gray-700">
-                  {review.comment?.trim() ||
-                    "The customer did not leave a written comment."}
-                </p>
-              </div>
-
-              <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50/60 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-semibold text-gray-900">
-                    Your business reply
-                  </h3>
-
-                  {hasReply && !isEditing && (
-                    <span className="rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-800">
-                      Replied
-                    </span>
-                  )}
-                </div>
-
-                {hasReply && !isEditing ? (
-                  <>
-                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-700">
-                      {review.ownerReply?.reply}
-                    </p>
-
-                    {review.ownerReply?.updated_at && (
-                      <p className="mt-2 text-xs text-gray-500">
-                        Last updated{" "}
-                        {new Date(
-                          review.ownerReply.updated_at,
-                        ).toLocaleDateString()}
-                      </p>
-                    )}
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setReplyDrafts((previous) => ({
-                            ...previous,
-                            [review.id]: review.ownerReply?.reply ?? "",
-                          }));
-                          setEditingReviewId(review.id);
-                          setError("");
-                          setSuccess("");
-                        }}
-                        className="rounded-lg bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+                      <div
+                        className="flex items-center gap-1"
+                        aria-label={`${item.review.rating} out of 5 stars`}
                       >
-                        Edit reply
-                      </button>
+                        {Array.from({ length: 5 }, (_, index) => (
+                          <span
+                            key={index}
+                            className={
+                              index < item.review.rating
+                                ? "text-amber-500"
+                                : "text-gray-300"
+                            }
+                          >
+                            ★
+                          </span>
+                        ))}
 
-                      <button
-                        type="button"
-                        onClick={() => void deleteReply(review)}
-                        disabled={isDeleting}
-                        className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        {isDeleting ? "Deleting..." : "Delete reply"}
-                      </button>
+                        <span className="ml-1 text-sm font-semibold text-gray-700">
+                          {item.review.rating}/5
+                        </span>
+                      </div>
                     </div>
-                  </>
-                ) : (
-                  <>
-                    <label
-                      htmlFor={`reply-${review.id}`}
-                      className="mt-3 block text-sm text-gray-600"
-                    >
-                      {hasReply
-                        ? "Update your response to this customer."
-                        : "Thank the customer or respond to their feedback."}
-                    </label>
 
-                    <textarea
-                      id={`reply-${review.id}`}
-                      value={replyDrafts[review.id] ?? ""}
-                      onChange={(event) =>
-                        setReplyDrafts((previous) => ({
-                          ...previous,
-                          [review.id]: event.target.value,
-                        }))
-                      }
-                      maxLength={2000}
-                      rows={4}
-                      placeholder="Write a professional, helpful reply..."
-                      className="mt-2 w-full rounded-xl border border-gray-300 bg-white p-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
+                    <div className="mt-5 rounded-xl bg-gray-50 p-4">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Customer feedback
+                      </p>
 
-                    <div className="mt-2 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-                      <span className="text-xs text-gray-500">
-                        {(replyDrafts[review.id] ?? "").length}/2000
-                        {" "}characters
-                      </span>
+                      <p className="whitespace-pre-wrap break-words text-sm leading-7 text-gray-700">
+                        {item.review.comment?.trim() ||
+                          "The customer left a rating without a comment."}
+                      </p>
+                    </div>
+                  </div>
 
-                      <div className="flex flex-wrap gap-2">
-                        {isEditing && (
+                  <div className="p-5 sm:p-6">
+                    {item.reply && !isEditing ? (
+                      <div>
+                        <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+                          <h4 className="font-semibold text-gray-900">
+                            Your reply
+                          </h4>
+
+                          <span className="text-xs text-green-700">
+                            Replied{" "}
+                            {new Date(
+                              item.reply.updated_at,
+                            ).toLocaleDateString()}
+                          </span>
+                        </div>
+
+                        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-gray-700">
+                          {item.reply.reply}
+                        </p>
+
+                        <div className="mt-4 flex flex-wrap gap-3">
                           <button
                             type="button"
                             onClick={() => {
-                              setEditingReviewId(null);
-                              setReplyDrafts((previous) => ({
-                                ...previous,
-                                [review.id]:
-                                  review.ownerReply?.reply ?? "",
-                              }));
+                              updateDraft(reviewId, item.reply!.reply);
+                              toggleEditing(reviewId, true);
+                              setPageError("");
+                              setNotice("");
                             }}
                             disabled={isSaving}
-                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-gray-100 disabled:opacity-50"
+                            className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
                           >
-                            Cancel
+                            Edit reply
                           </button>
-                        )}
 
-                        <button
-                          type="button"
-                          onClick={() => void saveReply(review)}
-                          disabled={isSaving || isDeleting}
-                          className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {isSaving
-                            ? "Saving..."
-                            : hasReply
-                              ? "Update reply"
-                              : "Post reply"}
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => void deleteReply(item)}
+                            disabled={isSaving}
+                            className="rounded-xl border border-red-200 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                          >
+                            {isSaving ? "Please wait..." : "Delete reply"}
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </article>
-          );
-        })}
+                    ) : (
+                      <div>
+                        <h4 className="font-semibold text-gray-900">
+                          {item.reply ? "Edit your reply" : "Reply to customer"}
+                        </h4>
+
+                        <p className="mt-1 text-sm text-gray-500">
+                          Be helpful, professional, and respectful.
+                        </p>
+
+                        <textarea
+                          value={drafts[reviewId] ?? ""}
+                          onChange={(event) =>
+                            updateDraft(reviewId, event.target.value)
+                          }
+                          maxLength={2000}
+                          rows={4}
+                          placeholder="Thank the customer or respond to their feedback..."
+                          disabled={isSaving}
+                          className="mt-4 w-full resize-y rounded-xl border border-gray-300 px-4 py-3 text-sm leading-6 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-orange-500 focus:ring-2 focus:ring-orange-100 disabled:bg-gray-100"
+                        />
+
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                          <span className="text-xs text-gray-500">
+                            {(drafts[reviewId] ?? "").length}/2000 characters
+                          </span>
+
+                          <div className="flex flex-wrap gap-3">
+                            {isEditing && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateDraft(
+                                    reviewId,
+                                    item.reply?.reply ?? "",
+                                  );
+                                  toggleEditing(reviewId, false);
+                                  setPageError("");
+                                }}
+                                disabled={isSaving}
+                                className="rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => void saveReply(item)}
+                              disabled={isSaving}
+                              className="rounded-xl bg-orange-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isSaving
+                                ? "Saving..."
+                                : item.reply
+                                  ? "Save changes"
+                                  : "Publish reply"}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </section>
+        )}
+        <footer className="mt-10 border-t border-gray-200 py-6 text-center text-xs text-gray-500">
+          Responding to customer feedback helps build trust in your business.
+        </footer>
       </div>
-    )}
-  </div>
-</main>
-);
-}
-
-function StatCard({
-label,
-value,
-}: {
-label: string;
-value: string;
-}) {
-return ( <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm"> <p className="text-sm text-gray-500">{label}</p> <p className="mt-2 text-2xl font-bold text-gray-900">{value}</p> </div>
-);
-}
-
-function FilterButton({
-active,
-onClick,
-children,
-}: {
-active: boolean;
-onClick: () => void;
-children: ReactNode;
-}) {
-return (
-<button
-type="button"
-onClick={onClick}
-aria-pressed={active}
-className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-        active
-          ? "bg-gray-900 text-white"
-          : "border border-gray-300 bg-white text-gray-700 hover:bg-gray-100"
-      }`}
->
-{children} </button>
-);
+    </main>
+  );
 }

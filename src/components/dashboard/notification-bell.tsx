@@ -1,60 +1,101 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Bell } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 export default function NotificationBell() {
+  const supabase = useMemo(() => createClient(), []);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   const loadUnreadCount = useCallback(async () => {
-    try {
-      const response = await fetch("/api/notifications", {
-        cache: "no-store",
-      });
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
 
-      if (!response.ok) {
-        return;
-      }
-
-      const data = await response.json();
-
-      setUnreadCount(
-        typeof data.unreadCount === "number" ? data.unreadCount : 0,
-      );
-    } catch (error) {
-      console.error("Failed to load notification count:", error);
+    if (authError || !user) {
+      setUnreadCount(0);
+      setLoading(false);
+      return;
     }
-  }, []);
+
+    const { count, error } = await supabase
+      .from("notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("is_read", false);
+
+    if (error) {
+      console.error("Unable to load unread notifications:", error.message);
+      setLoading(false);
+      return;
+    }
+
+    setUnreadCount(count ?? 0);
+    setLoading(false);
+  }, [supabase]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadUnreadCount();
     }, 0);
 
-    const interval = window.setInterval(() => {
-      void loadUnreadCount();
-    }, 60_000);
+    let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | undefined;
+
+    async function subscribeToNotifications() {
+      const {
+        data: { user },
+        error,
+      } = await supabase.auth.getUser();
+
+      if (cancelled || error || !user) return;
+
+      channel = supabase
+        .channel(`notification-bell-${user.id}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "notifications",
+            filter: `user_id=eq.${user.id}`,
+          },
+          () => {
+            void loadUnreadCount();
+          },
+        )
+        .subscribe();
+    }
+
+    void subscribeToNotifications();
 
     return () => {
+      cancelled = true;
       window.clearTimeout(timer);
-      window.clearInterval(interval);
+
+      if (channel) {
+        void supabase.removeChannel(channel);
+      }
     };
-  }, [loadUnreadCount]);
+  }, [supabase, loadUnreadCount]);
 
   return (
     <Link
       href="/dashboard/notifications"
       aria-label={
         unreadCount > 0
-          ? `Notifications, ${unreadCount} unread`
+          ? `${unreadCount} unread notifications`
           : "Notifications"
       }
-      className="relative inline-flex items-center justify-center rounded-lg p-2 text-gray-600 transition hover:bg-emerald-50 hover:text-emerald-700"
+      className="relative inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-700 transition hover:bg-gray-50"
     >
       <Bell className="h-5 w-5" />
 
-      {unreadCount > 0 && (
+      {!loading && unreadCount > 0 && (
         <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
           {unreadCount > 99 ? "99+" : unreadCount}
         </span>

@@ -1,384 +1,567 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+  ArrowLeft,
+  Bell,
+  Check,
+  CheckCheck,
+  Clock,
+  Inbox,
+  LoaderCircle,
+  MessageSquare,
+  RefreshCw,
+  ShieldCheck,
+  Star,
+  XCircle,
+  AlertCircle,
+} from "lucide-react";
+
 import { createClient } from "@/lib/supabase/client";
 
+type NotificationType =
+  | "general"
+  | "new_review"
+  | "review_approved"
+  | "review_rejected"
+  | "new_reply";
+
 type Notification = {
-id: string;
-user_id: string;
-title: string;
-message: string;
-type: string | null;
-business_id: string | null;
-review_id: string | null;
-is_read: boolean;
-created_at: string;
+  id: string;
+  user_id: string;
+  business_id: string | null;
+  title: string;
+  message: string;
+  type: NotificationType;
+  link: string | null;
+  is_read: boolean;
+  created_at: string;
 };
 
-function formatDate(dateString: string) {
-const date = new Date(dateString);
+const PAGE_SIZE = 100;
 
-if (Number.isNaN(date.getTime())) {
-return "Date unavailable";
-}
-
-return new Intl.DateTimeFormat("en", {
-dateStyle: "medium",
-timeStyle: "short",
-}).format(date);
-}
-
-function getNotificationLink(notification: Notification) {
-if (
-notification.type === "new_review" ||
-notification.review_id
-) {
-return notification.review_id
-? `/dashboard/reviews?reviewId=${encodeURIComponent(notification.review_id)}`
-: "/dashboard/reviews";
-}
-
-if (notification.business_id) {
-return `/dashboard/businesses/${encodeURIComponent(notification.business_id)}/edit`;
-}
-
-return "/dashboard";
-}
-
-export default function NotificationsPage() {
-const [supabase] = useState(() => createClient());
-
-const [notifications, setNotifications] = useState<Notification[]>([]);
-const [loading, setLoading] = useState(true);
-const [error, setError] = useState<string | null>(null);
-const [updatingId, setUpdatingId] = useState<string | null>(null);
-const [markingAll, setMarkingAll] = useState(false);
-
-const unreadCount = notifications.filter(
-(notification) => !notification.is_read,
-).length;
-
-const loadNotifications = useCallback(async () => {
-setError(null);
-
-
-const {
-  data: { user },
-  error: authError,
-} = await supabase.auth.getUser();
-
-if (authError || !user) {
-  setError("Please sign in to view your notifications.");
-  setNotifications([]);
-  setLoading(false);
-  return;
-}
-
-const { data, error: queryError } = await supabase
-  .from("notifications")
-  .select(
-    "id, user_id, title, message, type, business_id, review_id, is_read, created_at",
-  )
-  .eq("user_id", user.id)
-  .order("created_at", { ascending: false });
-
-if (queryError) {
-  console.error("Unable to load notifications:", queryError);
-  setError("Unable to load notifications. Please try again.");
-  setNotifications([]);
-  setLoading(false);
-  return;
-}
-
-setNotifications((data ?? []) as Notification[]);
-setLoading(false);
-
-
-}, [supabase]);
-
-useEffect(() => {
-let active = true;
-
-async function initialize() {
-  await loadNotifications();
-
-  if (!active) {
-    return;
+function getNotificationIcon(type: NotificationType) {
+  switch (type) {
+    case "new_review":
+      return Star;
+    case "review_approved":
+      return ShieldCheck;
+    case "review_rejected":
+      return XCircle;
+    case "new_reply":
+      return MessageSquare;
+    default:
+      return Bell;
   }
 }
 
-void initialize();
-
-return () => {
-  active = false;
-};
-
-
-}, [loadNotifications]);
-
-async function markAsRead(notification: Notification) {
-if (notification.is_read) {
-return;
+function getNotificationStyle(type: NotificationType) {
+  switch (type) {
+    case "new_review":
+      return "bg-amber-50 text-amber-700";
+    case "review_approved":
+      return "bg-emerald-50 text-emerald-700";
+    case "review_rejected":
+      return "bg-red-50 text-red-700";
+    case "new_reply":
+      return "bg-blue-50 text-blue-700";
+    default:
+      return "bg-slate-100 text-slate-700";
+  }
 }
 
+function formatDate(dateString: string) {
+  const date = new Date(dateString);
 
-setUpdatingId(notification.id);
-setError(null);
+  if (Number.isNaN(date.getTime())) {
+    return "Date unavailable";
+  }
 
-const {
-  data: { user },
-  error: authError,
-} = await supabase.auth.getUser();
-
-if (authError || !user) {
-  setError("Your session has expired. Please sign in again.");
-  setUpdatingId(null);
-  return;
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
-const { error: updateError } = await supabase
-  .from("notifications")
-  .update({ is_read: true })
-  .eq("id", notification.id)
-  .eq("user_id", user.id);
+function getSafeNotificationLink(link: string | null) {
+  if (!link || !link.startsWith("/") || link.startsWith("//")) {
+    return null;
+  }
 
-if (updateError) {
-  console.error("Unable to mark notification as read:", updateError);
-  setError("Unable to update this notification.");
-  setUpdatingId(null);
-  return;
+  return link;
 }
 
-setNotifications((current) =>
-  current.map((item) =>
-    item.id === notification.id ? { ...item, is_read: true } : item,
-  ),
-);
+export default function NotificationsPage() {
+  const router = useRouter();
 
-setUpdatingId(null);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [markingAll, setMarkingAll] = useState(false);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
+  const supabase = createClient();
 
-}
+  const loadNotifications = useCallback(async () => {
+    setLoading(true);
+    setError("");
 
-async function markAllAsRead() {
-if (unreadCount === 0 || markingAll) {
-return;
-}
+    try {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
 
+      if (authError || !user) {
+        router.replace("/login");
+        return;
+      }
 
-setMarkingAll(true);
-setError(null);
+      const { data, error: queryError } = await supabase
+        .from("notifications")
+        .select(
+          "id, user_id, business_id, title, message, type, link, is_read, created_at",
+        )
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(PAGE_SIZE);
 
-const {
-  data: { user },
-  error: authError,
-} = await supabase.auth.getUser();
+      if (queryError) {
+        console.error(
+          "Notifications Supabase error:",
+          JSON.stringify(queryError, Object.getOwnPropertyNames(queryError), 2),
+        );
 
-if (authError || !user) {
-  setError("Your session has expired. Please sign in again.");
-  setMarkingAll(false);
-  return;
-}
+        console.error("Notifications error message:", queryError.message);
+        console.error("Notifications error code:", queryError.code);
+        console.error("Notifications error details:", queryError.details);
+        console.error("Notifications error hint:", queryError.hint);
 
-const { error: updateError } = await supabase
-  .from("notifications")
-  .update({ is_read: true })
-  .eq("user_id", user.id)
-  .eq("is_read", false);
+        setError(
+          queryError.message ||
+            "Unable to load notifications. Please try again.",
+        );
 
-if (updateError) {
-  console.error("Unable to mark all notifications as read:", updateError);
-  setError("Unable to mark all notifications as read.");
-  setMarkingAll(false);
-  return;
-}
+        setNotifications([]);
+        return;
+      }
 
-setNotifications((current) =>
-  current.map((notification) => ({
-    ...notification,
-    is_read: true,
-  })),
-);
+      setNotifications((data ?? []) as Notification[]);
+    } catch (err) {
+      console.error("Failed to load notifications:", err);
 
-setMarkingAll(false);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load notifications. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [router, supabase]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadNotifications();
+    }, 0);
 
-}
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [loadNotifications]);
 
-if (loading) {
-return ( <main className="mx-auto max-w-4xl px-4 py-10 sm:px-6"> <div className="animate-pulse rounded-2xl border border-gray-200 bg-white p-8"> <div className="h-7 w-56 rounded bg-gray-200" /> <div className="mt-6 h-20 rounded-xl bg-gray-100" /> <div className="mt-3 h-20 rounded-xl bg-gray-100" /> <div className="mt-3 h-20 rounded-xl bg-gray-100" /> </div> </main>
-);
-}
+  const unreadCount = notifications.filter(
+    (notification) => !notification.is_read,
+  ).length;
 
-return ( <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:py-12"> <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center"> <div> <p className="text-sm font-semibold uppercase tracking-wide text-orange-600">
-Your account </p>
-      <h1 className="mt-2 text-3xl font-bold tracking-tight text-gray-900">
-        Notifications
-      </h1>
+  async function markAsRead(notification: Notification) {
+    if (notification.is_read || updatingId) {
+      return;
+    }
 
-      <p className="mt-2 text-sm text-gray-600">
-        Keep up with reviews and updates about your businesses.
-      </p>
-    </div>
+    setUpdatingId(notification.id);
+    setError("");
 
-    <button
-      type="button"
-      onClick={markAllAsRead}
-      disabled={unreadCount === 0 || markingAll}
-      className="inline-flex min-h-11 items-center justify-center rounded-xl border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-    >
-      {markingAll ? "Updating..." : "Mark all as read"}
-    </button>
-  </div>
+    const previousNotifications = notifications;
 
-  <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <h2 className="text-lg font-semibold text-gray-900">
-        Your activity
-      </h2>
+    setNotifications((current) =>
+      current.map((item) =>
+        item.id === notification.id ? { ...item, is_read: true } : item,
+      ),
+    );
 
-      <span className="rounded-full bg-orange-100 px-3 py-1 text-sm font-semibold text-orange-800">
-        {unreadCount} unread
-      </span>
-    </div>
+    try {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
 
-    {error && (
-      <div
-        role="alert"
-        className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
-      >
-        {error}
+      if (authError || !user) {
+        throw new Error("Your session has expired. Please sign in again.");
+      }
 
-        {notifications.length === 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              setLoading(true);
-              void loadNotifications();
-            }}
-            className="ml-2 font-semibold underline"
-          >
-            Try again
-          </button>
-        )}
-      </div>
-    )}
+      const { error: updateError } = await supabase
+        .from("notifications")
+        .update({ is_read: true })
+        .eq("id", notification.id)
+        .eq("user_id", user.id);
 
-    {!error && notifications.length === 0 && (
-      <div className="py-14 text-center">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-orange-50 text-3xl">
-          🔔
-        </div>
+      if (updateError) {
+        throw updateError;
+      }
+    } catch (err) {
+      setNotifications(previousNotifications);
 
-        <h3 className="mt-4 text-lg font-semibold text-gray-900">
-          You&apos;re all caught up
-        </h3>
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to mark notification as read.",
+      );
+    } finally {
+      setUpdatingId(null);
+    }
+  }
 
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-gray-600">
-          When something important happens with your account or businesses,
-          your notifications will appear here.
-        </p>
+  async function markAllAsRead() {
+    if (unreadCount === 0 || markingAll) {
+      return;
+    }
 
+    setMarkingAll(true);
+    setError("");
+
+    const previousNotifications = notifications;
+
+    setNotifications((current) =>
+      current.map((notification) => ({
+        ...notification,
+        is_read: true,
+      })),
+    );
+
+    try {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        throw new Error("Your session has expired. Please sign in again.");
+      }
+
+      const { error: updateError } = await supabase
+        .from("notifications")
+        .update({ is_read: true })
+        .eq("user_id", user.id)
+        .eq("is_read", false);
+
+      if (updateError) {
+        throw updateError;
+      }
+    } catch (err) {
+      setNotifications(previousNotifications);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to mark all notifications as read.",
+      );
+    } finally {
+      setMarkingAll(false);
+    }
+  }
+
+  async function openNotification(notification: Notification) {
+    if (!notification.is_read) {
+      await markAsRead(notification);
+    }
+
+    const destination = getSafeNotificationLink(notification.link);
+
+    if (destination) {
+      router.push(destination);
+    }
+  }
+
+  return (
+    <main className="min-h-screen bg-[#F5F7FB] px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-5xl">
         <Link
           href="/dashboard"
-          className="mt-5 inline-flex min-h-11 items-center justify-center rounded-xl bg-orange-600 px-5 py-2 font-semibold text-white transition hover:bg-orange-700"
+          className="mb-6 inline-flex items-center gap-2 text-sm font-semibold text-[#64748B] transition hover:text-[#FF6B00]"
         >
-          Go to dashboard
+          <ArrowLeft size={18} aria-hidden="true" />
+          Back to dashboard
         </Link>
-      </div>
-    )}
 
-    {notifications.length > 0 && (
-      <div className="mt-5 divide-y divide-gray-100">
-        {notifications.map((notification) => {
-          const destination = getNotificationLink(notification);
-          const isUpdating = updatingId === notification.id;
-
-          return (
-            <article
-              key={notification.id}
-              className={`py-5 first:pt-2 last:pb-1 ${
-                notification.is_read ? "" : "bg-orange-50/60"
-              }`}
-            >
-              <div className="flex gap-3 sm:gap-4">
-                <div
-                  className={`mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl ${
-                    notification.is_read
-                      ? "bg-gray-100"
-                      : "bg-orange-100"
-                  }`}
-                  aria-hidden="true"
-                >
-                  {notification.type === "new_review" ? "⭐" : "🔔"}
+        <section className="overflow-hidden rounded-3xl border border-[#E2E8F0] bg-white shadow-sm">
+          <div className="border-b border-[#E2E8F0] bg-gradient-to-r from-[#0B132B] to-[#172554] px-5 py-7 text-white sm:px-8 sm:py-9">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-4">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/10">
+                  <Bell size={27} aria-hidden="true" />
                 </div>
 
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-semibold text-gray-900">
-                      {notification.title}
-                    </h3>
+                <div>
+                  <h1 className="text-2xl font-extrabold sm:text-3xl">
+                    Notifications
+                  </h1>
 
-                    {!notification.is_read && (
-                      <span className="inline-block h-2 w-2 rounded-full bg-orange-600" aria-label="Unread" />
-                    )}
-                  </div>
-
-                  <p className="mt-1 whitespace-pre-line text-sm leading-6 text-gray-600">
-                    {notification.message}
+                  <p className="mt-2 text-sm text-slate-300">
+                    Stay updated on your business activity.
                   </p>
-
-                  <p className="mt-2 text-xs text-gray-500">
-                    {formatDate(notification.created_at)}
-                  </p>
-
-                  <div className="mt-3 flex flex-wrap items-center gap-4">
-                    <Link
-                      href={destination}
-                      onClick={() => {
-                        if (!notification.is_read) {
-                          void markAsRead(notification);
-                        }
-                      }}
-                      className="inline-flex min-h-10 items-center font-semibold text-orange-700 hover:text-orange-800 hover:underline"
-                    >
-                      {notification.type === "new_review" ||
-                      notification.review_id
-                        ? "View reviews →"
-                        : notification.business_id
-                          ? "View business →"
-                          : "Open dashboard →"}
-                    </Link>
-
-                    {!notification.is_read && (
-                      <button
-                        type="button"
-                        onClick={() => void markAsRead(notification)}
-                        disabled={isUpdating}
-                        className="min-h-10 text-sm font-medium text-gray-600 hover:text-gray-900 hover:underline disabled:opacity-50"
-                      >
-                        {isUpdating ? "Updating..." : "Mark as read"}
-                      </button>
-                    )}
-                  </div>
                 </div>
               </div>
-            </article>
-          );
-        })}
-      </div>
-    )}
-  </div>
 
-  <div className="mt-6 text-center">
-    <Link
-      href="/dashboard"
-      className="text-sm font-semibold text-gray-600 hover:text-orange-700"
-    >
-      ← Back to dashboard
-    </Link>
-  </div>
-</main>
-);
+              <Link
+                href="/dashboard/notifications/preferences"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <Bell className="h-4 w-4" />
+                Notification settings
+              </Link>
+
+              <button
+                type="button"
+                onClick={markAllAsRead}
+                disabled={unreadCount === 0 || markingAll || loading}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-[#0B132B] transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {markingAll ? (
+                  <LoaderCircle
+                    size={17}
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <CheckCheck size={17} aria-hidden="true" />
+                )}
+                Mark all as read
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 border-b border-[#E2E8F0] p-5 sm:p-7">
+            <div className="rounded-2xl bg-[#F8FAFC] p-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-[#64748B]">
+                <Bell size={17} aria-hidden="true" />
+                Total notifications
+              </div>
+
+              <p className="mt-3 text-3xl font-extrabold text-[#0B132B]">
+                {notifications.length}
+              </p>
+            </div>
+
+            <div className="rounded-2xl bg-amber-50 p-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-amber-800">
+                <Clock size={17} aria-hidden="true" />
+                Unread notifications
+              </div>
+
+              <p className="mt-3 text-3xl font-extrabold text-amber-700">
+                {unreadCount}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 px-5 pb-2 pt-6 sm:px-7">
+            <div>
+              <h2 className="text-lg font-bold text-[#0B132B]">
+                Recent activity
+              </h2>
+
+              <p className="mt-1 text-sm text-[#64748B]">
+                Your latest 100 notifications.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void loadNotifications()}
+              disabled={loading}
+              aria-label="Refresh notifications"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#E2E8F0] text-[#64748B] transition hover:border-amber-400 hover:text-[#FF6B00] disabled:opacity-50"
+            >
+              <RefreshCw
+                size={17}
+                className={loading ? "animate-spin" : ""}
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+
+          {error && (
+            <div
+              role="alert"
+              className="mx-5 mt-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 sm:mx-7"
+            >
+              <AlertCircle
+                size={19}
+                className="mt-0.5 shrink-0"
+                aria-hidden="true"
+              />
+
+              <div className="min-w-0 flex-1">
+                <p>{error}</p>
+
+                <button
+                  type="button"
+                  onClick={() => void loadNotifications()}
+                  className="mt-2 font-bold underline"
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="p-5 sm:p-7">
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <LoaderCircle
+                  size={34}
+                  className="animate-spin text-[#FF6B00]"
+                  aria-hidden="true"
+                />
+
+                <p className="mt-4 font-semibold text-[#0B132B]">
+                  Loading notifications...
+                </p>
+
+                <p className="mt-2 text-sm text-[#64748B]">
+                  Please wait a moment.
+                </p>
+              </div>
+            ) : notifications.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#CBD5E1] bg-[#FAFBFD] px-5 py-16 text-center">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 text-amber-700">
+                  <Inbox size={31} aria-hidden="true" />
+                </div>
+
+                <h3 className="mt-5 text-lg font-bold text-[#0B132B]">
+                  You&apos;re all caught up!
+                </h3>
+
+                <p className="mt-2 max-w-md text-sm leading-6 text-[#64748B]">
+                  When customers submit reviews or an administrator updates
+                  their status, your notifications will appear here.
+                </p>
+
+                <Link
+                  href="/dashboard/reviews"
+                  className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[#FF6B00] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#E85F00]"
+                >
+                  <Star size={17} aria-hidden="true" />
+                  View customer reviews
+                </Link>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {notifications.map((notification) => {
+                  const Icon = getNotificationIcon(notification.type);
+                  const iconStyle = getNotificationStyle(notification.type);
+                  const destination = getSafeNotificationLink(
+                    notification.link,
+                  );
+
+                  return (
+                    <article
+                      key={notification.id}
+                      className={`rounded-2xl border p-4 transition sm:p-5 ${
+                        notification.is_read
+                          ? "border-[#E2E8F0] bg-white"
+                          : "border-amber-200 bg-amber-50/50"
+                      }`}
+                    >
+                      <div className="flex items-start gap-3 sm:gap-4">
+                        <div
+                          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${iconStyle}`}
+                        >
+                          <Icon size={21} aria-hidden="true" />
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-bold text-[#0B132B]">
+                              {notification.title}
+                            </h3>
+
+                            {!notification.is_read && (
+                              <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">
+                                New
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#475569]">
+                            {notification.message}
+                          </p>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-2 text-xs text-[#64748B]">
+                            <Clock size={14} aria-hidden="true" />
+                            <time dateTime={notification.created_at}>
+                              {formatDate(notification.created_at)}
+                            </time>
+                          </div>
+
+                          <div className="mt-4 flex flex-wrap items-center gap-3">
+                            {destination && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void openNotification(notification)
+                                }
+                                disabled={updatingId === notification.id}
+                                className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-[#0B132B] px-3 py-2 text-xs font-bold text-white transition hover:bg-[#172554] disabled:opacity-50"
+                              >
+                                Open notification
+                              </button>
+                            )}
+
+                            {!notification.is_read && (
+                              <button
+                                type="button"
+                                onClick={() => void markAsRead(notification)}
+                                disabled={updatingId === notification.id}
+                                className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs font-bold text-[#475569] transition hover:border-amber-400 hover:text-[#B45309] disabled:opacity-50"
+                              >
+                                {updatingId === notification.id ? (
+                                  <LoaderCircle
+                                    size={14}
+                                    className="animate-spin"
+                                    aria-hidden="true"
+                                  />
+                                ) : (
+                                  <Check size={14} aria-hidden="true" />
+                                )}
+                                Mark as read
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-[#E2E8F0] bg-[#FAFBFD] px-5 py-4 sm:px-7">
+            <p className="text-xs leading-5 text-[#64748B]">
+              Notifications are private to your account. Only notifications
+              permitted by your Supabase security policies can be viewed or
+              updated.
+            </p>
+          </div>
+        </section>
+      </div>
+    </main>
+  );
 }

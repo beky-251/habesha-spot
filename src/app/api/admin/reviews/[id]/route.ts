@@ -7,121 +7,231 @@ type RouteContext = {
 params: Promise<{ id: string }>;
 };
 
-export async function PATCH(
-request: Request,
-{ params }: RouteContext,
-) {
-try {
+const UUID_PATTERN =
+/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function verifyAdmin() {
 const supabase = await createClient();
 
-// 1. Verify the signed-in user.
 const {
-  data: { user },
-  error: authError,
+data: { user },
+error: authError,
 } = await supabase.auth.getUser();
 
 if (authError || !user) {
-  return NextResponse.json(
-    { error: "You must sign in to perform this action." },
-    { status: 401 },
-  );
+return {
+supabase,
+error: NextResponse.json(
+{ error: "You must sign in to perform this action." },
+{ status: 401 },
+),
+};
 }
 
-// 2. Verify that the user is an administrator.
 const { data: profile, error: profileError } = await supabase
-  .from("profiles")
-  .select("role")
-  .eq("id", user.id)
-  .maybeSingle();
+.from("profiles")
+.select("role")
+.eq("id", user.id)
+.maybeSingle();
 
 if (profileError) {
-  console.error("Admin profile check failed:", profileError.message);
+console.error(
+"Admin profile verification failed:",
+profileError.message,
+);
 
-  return NextResponse.json(
+return {
+  supabase,
+  error: NextResponse.json(
     { error: "Unable to verify administrator permissions." },
     { status: 500 },
-  );
+  ),
+};
+
+
 }
 
 if (profile?.role !== "admin") {
-  return NextResponse.json(
-    { error: "Administrator access is required." },
-    { status: 403 },
-  );
+return {
+supabase,
+error: NextResponse.json(
+{ error: "Administrator access is required." },
+{ status: 403 },
+),
+};
 }
 
-// 3. Get the review ID from the route.
+return { supabase, error: null };
+}
+
+async function getReviewId(params: RouteContext["params"]) {
 const { id } = await params;
 
-if (!id) {
-  return NextResponse.json(
-    { error: "A review ID is required." },
-    { status: 400 },
-  );
+if (!UUID_PATTERN.test(id)) {
+return null;
 }
 
-// 4. Validate the requested status.
-let body: { status?: unknown };
+return id;
+}
 
-try {
+/**
+
+* Approve or reject a review.
+* PATCH /api/admin/reviews/[id]
+  */
+  export async function PATCH(
+  request: Request,
+  { params }: RouteContext,
+  ) {
+  try {
+  const { supabase, error: adminError } = await verifyAdmin();
+
+  if (adminError) {
+  return adminError;
+  }
+
+  const id = await getReviewId(params);
+
+  if (!id) {
+  return NextResponse.json(
+  { error: "A valid review ID is required." },
+  { status: 400 },
+  );
+  }
+
+  let body: { status?: unknown };
+
+  try {
   body = await request.json();
-} catch {
+  } catch {
   return NextResponse.json(
-    { error: "The request body must contain valid JSON." },
-    { status: 400 },
+  { error: "The request body must contain valid JSON." },
+  { status: 400 },
   );
-}
+  }
 
-const status = body.status;
-
-if (status !== "approved" && status !== "rejected") {
+  if (
+  body.status !== "approved" &&
+  body.status !== "rejected"
+  ) {
   return NextResponse.json(
-    { error: "Status must be approved or rejected." },
-    { status: 400 },
+  { error: "Status must be approved or rejected." },
+  { status: 400 },
   );
-}
+  }
 
-// 5. Update the review.
-const reviewStatus: ReviewStatus = status;
+  const status: ReviewStatus = body.status;
 
-const { data: review, error: updateError } = await supabase
+  const { data: review, error: updateError } = await supabase
   .from("reviews")
-  .update({ status: reviewStatus })
+  .update({
+  status,
+  updated_at: new Date().toISOString(),
+  })
   .eq("id", id)
-  .select("id, status")
+  .select("id, business_id, rating, status, updated_at")
   .maybeSingle();
 
-if (updateError) {
+  if (updateError) {
   console.error("Review update failed:", updateError.message);
 
   return NextResponse.json(
-    {
-      error:
-        "Unable to update the review. Check your reviews table permissions and RLS policies.",
-    },
-    { status: 500 },
+  {
+  error:
+  "Unable to update this review. Check the reviews table permissions and RLS policies.",
+  },
+  { status: 500 },
   );
-}
+  }
 
-if (!review) {
+  if (!review) {
   return NextResponse.json(
-    { error: "Review not found or you do not have permission to update it." },
-    { status: 404 },
+  {
+  error:
+  "Review not found or you do not have permission to update it.",
+  },
+  { status: 404 },
   );
-}
+  }
 
-// 6. Return the updated review.
-return NextResponse.json({
-  message: `Review ${reviewStatus} successfully.`,
+  return NextResponse.json({
+  message: `Review ${status} successfully.`,
   review,
-});
+  });
+  } catch (error) {
+  console.error("Admin review API error:", error);
 
-} catch (error) {
-console.error("Admin review API error:", error);
-
-return NextResponse.json(
+  return NextResponse.json(
   { error: "An unexpected server error occurred." },
   { status: 500 },
-);
-}
-}
+  );
+  }
+  }
+
+/**
+
+* Delete a review.
+* DELETE /api/admin/reviews/[id]
+  */
+  export async function DELETE(
+  _request: Request,
+  { params }: RouteContext,
+  ) {
+  try {
+  const { supabase, error: adminError } = await verifyAdmin();
+
+  if (adminError) {
+  return adminError;
+  }
+
+  const id = await getReviewId(params);
+
+  if (!id) {
+  return NextResponse.json(
+  { error: "A valid review ID is required." },
+  { status: 400 },
+  );
+  }
+
+  const { data: deletedReview, error: deleteError } = await supabase
+  .from("reviews")
+  .delete()
+  .eq("id", id)
+  .select("id")
+  .maybeSingle();
+
+  if (deleteError) {
+  console.error("Review deletion failed:", deleteError.message);
+
+  return NextResponse.json(
+  {
+  error:
+  "Unable to delete this review. Check the reviews table permissions and RLS policies.",
+  },
+  { status: 500 },
+  );
+  }
+
+  if (!deletedReview) {
+  return NextResponse.json(
+  {
+  error:
+  "Review not found or you do not have permission to delete it.",
+  },
+  { status: 404 },
+  );
+  }
+
+  return NextResponse.json({
+  message: "Review deleted successfully.",
+  id: deletedReview.id,
+  });
+  } catch (error) {
+  console.error("Admin review deletion error:", error);
+
+  return NextResponse.json(
+  { error: "An unexpected server error occurred." },
+  { status: 500 },
+  );
+  }
+  }

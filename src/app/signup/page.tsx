@@ -1,262 +1,416 @@
 "use client";
 
+import { FormEvent, useState } from "react";
 import Link from "next/link";
-import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ArrowLeft,
+  Building2,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Loader2,
+  LockKeyhole,
+  Mail,
+  MapPin,
+  UserRound,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
+type AccountType = "customer" | "business_owner";
+
 export default function SignupPage() {
-const router = useRouter();
-
-const [fullName, setFullName] = useState("");
-const [email, setEmail] = useState("");
-const [password, setPassword] = useState("");
-const [confirmPassword, setConfirmPassword] = useState("");
-const [loading, setLoading] = useState(false);
-const [error, setError] = useState("");
-const [success, setSuccess] = useState("");
-
-async function handleSignup(event: FormEvent<HTMLFormElement>) {
-event.preventDefault();
-
-setError("");
-setSuccess("");
-
-const trimmedName = fullName.trim();
-const normalizedEmail = email.trim().toLowerCase();
-
-if (!trimmedName) {
-  setError("Please enter your full name.");
-  return;
-}
-
-if (!normalizedEmail) {
-  setError("Please enter your email address.");
-  return;
-}
-
-if (password.length < 8) {
-  setError("Your password must contain at least 8 characters.");
-  return;
-}
-
-if (password !== confirmPassword) {
-  setError("Your passwords do not match.");
-  return;
-}
-
-setLoading(true);
-
-try {
+  const router = useRouter();
   const supabase = createClient();
 
-  const { data, error: signupError } =
-    await supabase.auth.signUp({
-      email: normalizedEmail,
-      password,
-      options: {
-        data: {
-          full_name: trimmedName,
-        },
-      },
-    });
+  const [accountType, setAccountType] =
+    useState<AccountType>("customer");
 
-  if (signupError) {
-    setError(signupError.message);
-    return;
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  async function handleSignup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    setError("");
+    setSuccess("");
+
+    const cleanName = fullName.trim();
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (cleanName.length < 2) {
+      setError("Please enter your full name.");
+      return;
+    }
+
+    if (password.length < 8) {
+      setError("Your password must contain at least 8 characters.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Your passwords do not match.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const { data, error: signupError } =
+        await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: {
+              full_name: cleanName,
+              account_type: accountType,
+            },
+            emailRedirectTo:
+              `${window.location.origin}/auth/callback?next=/dashboard`,
+          },
+        });
+
+      if (signupError) {
+        setError(signupError.message);
+        return;
+      }
+
+      if (data.session) {
+        router.replace(
+          accountType === "business_owner"
+            ? "/dashboard/businesses"
+            : "/dashboard"
+        );
+        router.refresh();
+        return;
+      }
+
+      setSuccess(
+        "Your account has been created. Check your email for a verification link before signing in."
+      );
+    } catch {
+      setError("We couldn't create your account. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  if (data.session) {
-    router.replace("/dashboard");
-    router.refresh();
-    return;
-  }
-
-  setSuccess(
-    "Your account was created. Check your email for a confirmation link before signing in."
-  );
-} catch {
-  setError(
-    "Something went wrong while creating your account. Please try again."
-  );
-} finally {
-  setLoading(false);
-}
-
-}
-
-return ( <main className="min-h-screen bg-[#f8f7f3] px-4 py-12 text-[#25372b] sm:py-16"> <div className="mx-auto max-w-md"> <Link
-       href="/"
-       className="inline-flex items-center gap-2 text-sm font-semibold text-[#47664f] transition hover:text-[#263e2e]"
-     > <span aria-hidden="true">←</span>
-Back to HabeshaSpot </Link>
-    <div className="mt-8 rounded-3xl border border-[#e8e6dd] bg-white p-6 shadow-sm sm:p-9">
-      <div className="mb-7">
-        <Link href="/" className="inline-block">
-          <span className="text-2xl font-black tracking-tight text-[#294d37]">
+  return (
+    <main className="min-h-screen bg-slate-50 px-4 py-10">
+      <div className="mx-auto grid min-h-[700px] w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-xl md:grid-cols-2">
+        {/* Branding panel */}
+        <section className="hidden flex-col justify-between bg-[#0B132B] p-10 text-white md:flex">
+          <Link
+            href="/"
+            className="flex items-center gap-3 text-xl font-black"
+          >
+            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-400 text-[#0B132B]">
+              <MapPin size={24} />
+            </span>
             HabeshaSpot
-          </span>
-        </Link>
+          </Link>
 
-        <p className="mt-2 text-sm text-[#758075]">
-          Discover local, love local.
-        </p>
+          <div>
+            <p className="mb-3 text-sm font-bold uppercase tracking-[0.25em] text-amber-400">
+              Join our community
+            </p>
 
-        <h1 className="mt-8 text-3xl font-bold tracking-tight">
-          Create your account
-        </h1>
+            <h1 className="text-4xl font-black leading-tight">
+              Discover local favorites. Grow local businesses.
+            </h1>
 
-        <p className="mt-2 text-sm leading-6 text-[#68746b]">
-          Join HabeshaSpot to discover local businesses and manage your
-          own business listing.
-        </p>
-      </div>
+            <p className="mt-5 leading-7 text-slate-300">
+              Whether you are looking for a great place or sharing
+              your own business with Ethiopia, HabeshaSpot is here
+              to connect you.
+            </p>
+          </div>
 
-      {error && (
-        <div
-          role="alert"
-          className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
-        >
-          {error}
-        </div>
-      )}
+          <p className="text-sm text-slate-400">
+            Discover local, love local.
+          </p>
+        </section>
 
-      {success && (
-        <div
-          role="status"
-          className="mb-5 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm leading-6 text-green-800"
-        >
-          {success}
-          <div className="mt-3">
+        {/* Signup form */}
+        <section className="p-6 sm:p-10">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900"
+          >
+            <ArrowLeft size={16} />
+            Back to home
+          </Link>
+
+          <div className="mt-7">
+            <h2 className="text-3xl font-black text-slate-900">
+              Create your account
+            </h2>
+
+            <p className="mt-2 text-sm text-slate-500">
+              First, tell us how you want to use HabeshaSpot.
+            </p>
+          </div>
+
+          {/* Account type selection */}
+          <div className="mt-7">
+            <p className="mb-3 text-sm font-bold text-slate-700">
+              I want to join as a:
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                aria-pressed={accountType === "customer"}
+                onClick={() => setAccountType("customer")}
+                className={`rounded-2xl border-2 p-4 text-left transition ${
+                  accountType === "customer"
+                    ? "border-amber-400 bg-amber-50"
+                    : "border-slate-200 bg-white hover:border-slate-300"
+                }`}
+              >
+                <span
+                  className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl ${
+                    accountType === "customer"
+                      ? "bg-amber-400 text-[#0B132B]"
+                      : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  <UserRound size={21} />
+                </span>
+
+                <span className="block font-extrabold text-slate-900">
+                  Customer
+                </span>
+
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Discover places and share reviews.
+                </span>
+
+                {accountType === "customer" && (
+                  <CheckCircle2
+                    size={18}
+                    className="mt-3 text-amber-600"
+                  />
+                )}
+              </button>
+
+              <button
+                type="button"
+                aria-pressed={accountType === "business_owner"}
+                onClick={() => setAccountType("business_owner")}
+                className={`rounded-2xl border-2 p-4 text-left transition ${
+                  accountType === "business_owner"
+                    ? "border-amber-400 bg-amber-50"
+                    : "border-slate-200 bg-white hover:border-slate-300"
+                }`}
+              >
+                <span
+                  className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl ${
+                    accountType === "business_owner"
+                      ? "bg-amber-400 text-[#0B132B]"
+                      : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  <Building2 size={21} />
+                </span>
+
+                <span className="block font-extrabold text-slate-900">
+                  Business Owner
+                </span>
+
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Register and manage your business.
+                </span>
+
+                {accountType === "business_owner" && (
+                  <CheckCircle2
+                    size={18}
+                    className="mt-3 text-amber-600"
+                  />
+                )}
+              </button>
+            </div>
+          </div>
+
+          {accountType === "business_owner" && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900">
+              After creating your account, you can continue to the
+              business dashboard to register your business.
+            </div>
+          )}
+
+          {error && (
+            <div
+              role="alert"
+              className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+            >
+              {error}
+            </div>
+          )}
+
+          {success && (
+            <div
+              role="status"
+              className="mt-5 rounded-xl border border-green-200 bg-green-50 p-4 text-sm leading-6 text-green-800"
+            >
+              {success}
+
+              <div className="mt-3">
+                <Link
+                  href="/login"
+                  className="font-bold underline"
+                >
+                  Go to sign in
+                </Link>
+              </div>
+            </div>
+          )}
+
+          <form onSubmit={handleSignup} className="mt-6 space-y-4">
+            <div>
+              <label
+                htmlFor="fullName"
+                className="mb-2 block text-sm font-bold text-slate-700"
+              >
+                Full name
+              </label>
+
+              <div className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 focus-within:border-amber-500">
+                <UserRound size={18} className="text-slate-400" />
+
+                <input
+                  id="fullName"
+                  type="text"
+                  autoComplete="name"
+                  required
+                  minLength={2}
+                  maxLength={100}
+                  value={fullName}
+                  onChange={(event) => setFullName(event.target.value)}
+                  placeholder="Your full name"
+                  className="w-full bg-transparent py-3.5 text-slate-900 outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="email"
+                className="mb-2 block text-sm font-bold text-slate-700"
+              >
+                Email address
+              </label>
+
+              <div className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 focus-within:border-amber-500">
+                <Mail size={18} className="text-slate-400" />
+
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  maxLength={254}
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  className="w-full bg-transparent py-3.5 text-slate-900 outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="password"
+                className="mb-2 block text-sm font-bold text-slate-700"
+              >
+                Password
+              </label>
+
+              <div className="flex items-center gap-3 rounded-xl border border-slate-200 px-4 focus-within:border-amber-500">
+                <LockKeyhole size={18} className="text-slate-400" />
+
+                <input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="At least 8 characters"
+                  className="w-full bg-transparent py-3.5 text-slate-900 outline-none"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((visible) => !visible)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  className="text-slate-400 hover:text-slate-700"
+                >
+                  {showPassword ? (
+                    <EyeOff size={18} />
+                  ) : (
+                    <Eye size={18} />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="confirmPassword"
+                className="mb-2 block text-sm font-bold text-slate-700"
+              >
+                Confirm password
+              </label>
+
+              <input
+                id="confirmPassword"
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={8}
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                placeholder="Enter your password again"
+                className="w-full rounded-xl border border-slate-200 px-4 py-3.5 text-slate-900 outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-400 px-5 py-3.5 font-extrabold text-[#0B132B] transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {loading && (
+                <Loader2 size={18} className="animate-spin" />
+              )}
+
+              {loading
+                ? "Creating account..."
+                : accountType === "customer"
+                  ? "Create customer account"
+                  : "Create business owner account"}
+            </button>
+          </form>
+
+          <p className="mt-6 text-center text-sm text-slate-600">
+            Already have an account?{" "}
             <Link
               href="/login"
-              className="font-semibold underline underline-offset-4"
+              className="font-bold text-amber-700 hover:text-amber-800"
             >
-              Go to sign in
+              Sign in
             </Link>
-          </div>
-        </div>
-      )}
-
-      <form onSubmit={handleSignup} className="space-y-5">
-        <div>
-          <label
-            htmlFor="fullName"
-            className="mb-2 block text-sm font-semibold"
-          >
-            Full name
-          </label>
-
-          <input
-            id="fullName"
-            name="fullName"
-            type="text"
-            autoComplete="name"
-            required
-            maxLength={100}
-            value={fullName}
-            onChange={(event) => setFullName(event.target.value)}
-            placeholder="Enter your full name"
-            className="w-full rounded-xl border border-[#dedfd6] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[#a0a69f] focus:border-[#52765b] focus:ring-2 focus:ring-[#52765b]/15"
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="email"
-            className="mb-2 block text-sm font-semibold"
-          >
-            Email address
-          </label>
-
-          <input
-            id="email"
-            name="email"
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@example.com"
-            className="w-full rounded-xl border border-[#dedfd6] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[#a0a69f] focus:border-[#52765b] focus:ring-2 focus:ring-[#52765b]/15"
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="password"
-            className="mb-2 block text-sm font-semibold"
-          >
-            Password
-          </label>
-
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="new-password"
-            minLength={8}
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="At least 8 characters"
-            className="w-full rounded-xl border border-[#dedfd6] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[#a0a69f] focus:border-[#52765b] focus:ring-2 focus:ring-[#52765b]/15"
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="confirmPassword"
-            className="mb-2 block text-sm font-semibold"
-          >
-            Confirm password
-          </label>
-
-          <input
-            id="confirmPassword"
-            name="confirmPassword"
-            type="password"
-            autoComplete="new-password"
-            minLength={8}
-            required
-            value={confirmPassword}
-            onChange={(event) =>
-              setConfirmPassword(event.target.value)
-            }
-            placeholder="Enter your password again"
-            className="w-full rounded-xl border border-[#dedfd6] bg-white px-4 py-3 text-sm outline-none transition placeholder:text-[#a0a69f] focus:border-[#52765b] focus:ring-2 focus:ring-[#52765b]/15"
-          />
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="flex w-full items-center justify-center rounded-xl bg-[#31583d] px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-[#25462f] disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {loading ? "Creating account..." : "Create account"}
-        </button>
-      </form>
-
-      <div className="mt-6 text-center text-sm text-[#68746b]">
-        Already have an account?{" "}
-        <Link
-          href="/login"
-          className="font-semibold text-[#31583d] hover:underline"
-        >
-          Sign in
-        </Link>
+          </p>
+        </section>
       </div>
-
-      <p className="mt-6 text-center text-xs leading-5 text-[#8a9289]">
-        By creating an account, you agree to use HabeshaSpot responsibly.
-      </p>
-    </div>
-
-    <p className="mt-6 text-center text-xs text-[#8a9289]">
-      © HabeshaSpot · Discover local, love local.
-    </p>
-  </div>
-</main>
-
-);
+    </main>
+  );
 }

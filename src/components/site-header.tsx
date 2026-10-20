@@ -1,313 +1,164 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
-import { createClient } from "@/lib/supabase/client";
+import { usePathname } from "next/navigation";
+import { useState } from "react";
+import {
+MapPin,
+Menu,
+X,
+Search,
+Store,
+LayoutDashboard,
+UserRound,
+} from "lucide-react";
 
-const supabase = createClient();
+const navigation = [
+{ name: "Explore", href: "/search", icon: Search },
+{ name: "Businesses", href: "/business", icon: Store },
+{ name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+];
 
 export default function SiteHeader() {
-  const pathname = usePathname();
-  const router = useRouter();
+const pathname = usePathname();
+const [menuOpen, setMenuOpen] = useState(false);
 
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
+function linkClass(href: string) {
+const active =
+pathname === href ||
+(href !== "/" && pathname.startsWith(`${href}/`));
 
-  useEffect(() => {
-    let active = true;
+return [
+  "flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+  active
+    ? "bg-orange-50 text-orange-600"
+    : "text-slate-700 hover:bg-slate-100 hover:text-slate-950",
+].join(" ");
 
-    async function loadUser() {
-      try {
-        const {
-          data: { user: currentUser },
-          error,
-        } = await supabase.auth.getUser();
+}
 
-        if (!active) return;
+function closeMenu() {
+setMenuOpen(false);
+}
 
-        setUser(error ? null : currentUser);
-      } catch {
-        if (active) {
-          setUser(null);
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    }
+return ( <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/95 backdrop-blur-md"> <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+{/* Logo */} <Link
+       href="/"
+       onClick={closeMenu}
+       className="flex shrink-0 items-center gap-2"
+       aria-label="HabeshaSpot home"
+     > <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-orange-400"> <MapPin size={23} strokeWidth={2.5} /> </span>
+     
+      <span className="flex flex-col leading-none">
+        <span className="text-xl font-extrabold tracking-tight text-slate-900">
+          Habesha<span className="text-orange-500">Spot</span>
+        </span>
+        <span className="mt-1 text-[10px] font-medium tracking-wide text-slate-500">
+          Discover local, love local.
+        </span>
+      </span>
+    </Link>
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (_event: AuthChangeEvent, session: Session | null) => {
-        if (!active) return;
+    {/* Desktop navigation */}
+    <nav
+      className="hidden items-center gap-1 md:flex"
+      aria-label="Main navigation"
+    >
+      {navigation.map((item) => {
+        const Icon = item.icon;
 
-        setUser(session?.user ?? null);
-        setLoading(false);
-      }
-    );
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={linkClass(item.href)}
+          >
+            <Icon size={17} />
+            {item.name}
+          </Link>
+        );
+      })}
+    </nav>
 
-    void loadUser();
+    {/* Desktop actions */}
+    <div className="hidden items-center gap-3 md:flex">
+      <Link
+        href="/login"
+        className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+      >
+        <UserRound size={17} />
+        Sign in
+      </Link>
 
-    return () => {
-      active = false;
-      subscription.unsubscribe();
-    };
-  }, []);
+      <Link
+        href="/business/new"
+        className="rounded-lg bg-orange-500 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-orange-600"
+      >
+        Add your business
+      </Link>
+    </div>
 
-  function linkClass(href: string) {
-    const isActive =
-      pathname === href ||
-      (href !== "/" && pathname.startsWith(`${href}/`));
+    {/* Mobile menu button */}
+    <button
+      type="button"
+      className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-700 transition-colors hover:bg-slate-100 md:hidden"
+      onClick={() => setMenuOpen((open) => !open)}
+      aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
+      aria-expanded={menuOpen}
+      aria-controls="mobile-navigation"
+    >
+      {menuOpen ? <X size={23} /> : <Menu size={23} />}
+    </button>
+  </div>
 
-    return [
-      "rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-      isActive
-        ? "bg-orange-50 text-orange-700"
-        : "text-gray-700 hover:bg-gray-100 hover:text-gray-950",
-    ].join(" ");
-  }
+  {/* Mobile navigation */}
+  {menuOpen && (
+    <div
+      id="mobile-navigation"
+      className="border-t border-slate-200 bg-white px-4 pb-5 pt-3 shadow-lg md:hidden"
+    >
+      <nav
+        className="mx-auto flex max-w-7xl flex-col gap-1"
+        aria-label="Mobile navigation"
+      >
+        {navigation.map((item) => {
+          const Icon = item.icon;
 
-  function closeMenu() {
-    setMenuOpen(false);
-  }
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={closeMenu}
+              className={linkClass(item.href)}
+            >
+              <Icon size={18} />
+              {item.name}
+            </Link>
+          );
+        })}
 
-  async function handleSignOut() {
-    if (signingOut) return;
+        <div className="my-2 border-t border-slate-200" />
 
-    setSigningOut(true);
-
-    try {
-      const { error } = await supabase.auth.signOut();
-
-      if (error) {
-        console.error("Unable to sign out:", error.message);
-        return;
-      }
-
-      setUser(null);
-      setMenuOpen(false);
-      router.push("/");
-      router.refresh();
-    } catch (error) {
-      console.error("An unexpected error occurred while signing out:", error);
-    } finally {
-      setSigningOut(false);
-    }
-  }
-
-  return (
-    <header className="sticky top-0 z-50 border-b border-gray-200 bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
         <Link
-          href="/"
+          href="/login"
           onClick={closeMenu}
-          className="flex shrink-0 items-center gap-2"
-          aria-label="HabeshaSpot home"
+          className={linkClass("/login")}
         >
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-600 text-lg font-bold text-white">
-            H
-          </span>
-
-          <span className="flex flex-col">
-            <span className="text-lg font-bold tracking-tight text-gray-950">
-              HabeshaSpot
-            </span>
-            <span className="hidden text-xs text-gray-500 sm:block">
-              Discover local, love local.
-            </span>
-          </span>
+          <UserRound size={18} />
+          Sign in
         </Link>
 
-        <nav
-          aria-label="Main navigation"
-          className="hidden items-center gap-1 md:flex"
+        <Link
+          href="/business/new"
+          onClick={closeMenu}
+          className="mt-2 flex items-center justify-center gap-2 rounded-lg bg-orange-500 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-orange-600"
         >
-          <Link href="/" className={linkClass("/")}>
-            Home
-          </Link>
-
-          <Link href="/search" className={linkClass("/search")}>
-            Explore
-          </Link>
-
-          <Link href="/favorites" className={linkClass("/favorites")}>
-            Favorites
-          </Link>
-
-          {!loading && user && (
-            <Link href="/dashboard" className={linkClass("/dashboard")}>
-              Dashboard
-            </Link>
-          )}
-        </nav>
-
-        <div className="hidden items-center gap-3 md:flex">
-          {!loading && !user && (
-            <>
-              <Link
-                href="/login"
-                className="rounded-lg px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
-              >
-                Sign in
-              </Link>
-
-              <Link
-                href="/signup"
-                className="rounded-lg bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-orange-700"
-              >
-                Get started
-              </Link>
-            </>
-          )}
-
-          {!loading && user && (
-            <>
-              <Link
-                href="/dashboard/businesses"
-                className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50"
-              >
-                My businesses
-              </Link>
-
-              <button
-                type="button"
-                onClick={handleSignOut}
-                disabled={signingOut}
-                className="rounded-lg px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {signingOut ? "Signing out..." : "Sign out"}
-              </button>
-            </>
-          )}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setMenuOpen((open) => !open)}
-          aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
-          aria-expanded={menuOpen}
-          aria-controls="mobile-navigation"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-gray-200 text-gray-700 transition-colors hover:bg-gray-100 md:hidden"
-        >
-          {menuOpen ? (
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              className="h-5 w-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 6l12 12M18 6L6 18"
-              />
-            </svg>
-          ) : (
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              className="h-5 w-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            </svg>
-          )}
-        </button>
-      </div>
-
-      {menuOpen && (
-        <div
-          id="mobile-navigation"
-          className="border-t border-gray-200 bg-white px-4 py-4 md:hidden"
-        >
-          <nav aria-label="Mobile navigation" className="flex flex-col gap-1">
-            <Link href="/" onClick={closeMenu} className={linkClass("/")}>
-              Home
-            </Link>
-
-            <Link
-              href="/search"
-              onClick={closeMenu}
-              className={linkClass("/search")}
-            >
-              Explore businesses
-            </Link>
-
-            <Link
-              href="/favorites"
-              onClick={closeMenu}
-              className={linkClass("/favorites")}
-            >
-              Favorites
-            </Link>
-
-            {!loading && user && (
-              <>
-                <Link
-                  href="/dashboard"
-                  onClick={closeMenu}
-                  className={linkClass("/dashboard")}
-                >
-                  Dashboard
-                </Link>
-
-                <Link
-                  href="/dashboard/businesses"
-                  onClick={closeMenu}
-                  className={linkClass("/dashboard/businesses")}
-                >
-                  My businesses
-                </Link>
-              </>
-            )}
-
-            {!loading && !user && (
-              <>
-                <Link
-                  href="/login"
-                  onClick={closeMenu}
-                  className={linkClass("/login")}
-                >
-                  Sign in
-                </Link>
-
-                <Link
-                  href="/signup"
-                  onClick={closeMenu}
-                  className="mt-2 rounded-lg bg-orange-600 px-4 py-3 text-center text-sm font-semibold text-white transition-colors hover:bg-orange-700"
-                >
-                  Get started
-                </Link>
-              </>
-            )}
-
-            {!loading && user && (
-              <button
-                type="button"
-                onClick={handleSignOut}
-                disabled={signingOut}
-                className="mt-2 rounded-lg border border-gray-200 px-4 py-3 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {signingOut ? "Signing out..." : "Sign out"}
-              </button>
-            )}
-          </nav>
-        </div>
-      )}
-    </header>
-  );
+          <Store size={18} />
+          Add your business
+        </Link>
+      </nav>
+    </div>
+  )}
+</header>
+);
 }

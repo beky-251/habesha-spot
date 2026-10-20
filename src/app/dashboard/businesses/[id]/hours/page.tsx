@@ -1,6 +1,11 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type FormEvent,
+} from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -10,10 +15,10 @@ import {
   Save,
   CheckCircle2,
   AlertCircle,
+  CalendarDays,
 } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 
-type BusinessHours = {
+type BusinessHour = {
   id?: string;
   business_id: string;
   day_of_week: number;
@@ -28,7 +33,16 @@ type DaySchedule = {
   opens_at: string;
   closes_at: string;
   is_closed: boolean;
-  existingId?: string;
+};
+
+type ApiResponse = {
+  business?: {
+    id: string;
+    name: string;
+  };
+  hours?: BusinessHour[];
+  error?: string;
+  message?: string;
 };
 
 const DAYS = [
@@ -41,6 +55,9 @@ const DAYS = [
   "Saturday",
 ];
 
+const inputClassName =
+  "w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none transition focus:border-orange-500 focus:ring-4 focus:ring-orange-100 disabled:cursor-not-allowed disabled:bg-slate-100";
+
 function createDefaultSchedule(): DaySchedule[] {
   return DAYS.map((day, index) => ({
     day_of_week: index,
@@ -51,10 +68,18 @@ function createDefaultSchedule(): DaySchedule[] {
   }));
 }
 
-function normalizeTime(value: string | null): string {
-  if (!value) return "";
+function normalizeTime(value: string | null | undefined): string {
+  return value ? value.slice(0, 5) : "";
+}
 
-  return value.slice(0, 5);
+async function readResponse(response: Response): Promise<ApiResponse> {
+  try {
+    return (await response.json()) as ApiResponse;
+  } catch {
+    throw new Error(
+      "The server returned an unexpected response. Please try again.",
+    );
+  }
 }
 
 export default function BusinessHoursPage() {
@@ -64,121 +89,179 @@ export default function BusinessHoursPage() {
 
   const [businessName, setBusinessName] = useState("");
   const [schedule, setSchedule] = useState<DaySchedule[]>(
-    createDefaultSchedule
+    createDefaultSchedule,
   );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function initialize() {
+  const loadHours = useCallback(
+    async (signal: AbortSignal) => {
       try {
-        const supabase = createClient();
+        setLoading(true);
+        setErrorMessage("");
+        setSuccessMessage("");
 
-        const {
-          data: { user },
-          error: authError,
-        } = await supabase.auth.getUser();
+        const [businessResponse, hoursResponse] = await Promise.all([
+          fetch(
+            `/api/businesses/${encodeURIComponent(businessId)}`,
+            {
+              cache: "no-store",
+              signal,
+            },
+          ),
+          fetch(
+            `/api/businesses/${encodeURIComponent(businessId)}/hours`,
+            {
+              cache: "no-store",
+              signal,
+            },
+          ),
+        ]);
 
-        if (authError) throw authError;
+        const [businessResult, hoursResult] = await Promise.all([
+          readResponse(businessResponse),
+          readResponse(hoursResponse),
+        ]);
 
-        if (!user) {
-          router.replace("/login");
+        if (signal.aborted) return;
+
+        if (
+          businessResponse.status === 401 ||
+          hoursResponse.status === 401
+        ) {
+          router.replace(
+            `/login?redirectTo=${encodeURIComponent(
+              `/dashboard/businesses/${businessId}/hours`,
+            )}`,
+          );
           return;
         }
 
-        const { data: business, error: businessError } =
-          await supabase
-            .from("businesses")
-            .select("id, name")
-            .eq("id", businessId)
-            .eq("owner_user_id", user.id)
-            .maybeSingle();
-
-        if (businessError) throw businessError;
-
-        if (!business) {
+        if (!businessResponse.ok) {
           throw new Error(
-            "Business not found, or you do not have permission to manage it."
+            businessResult.error || "Unable to load your business.",
           );
         }
 
-        const { data: hours, error: hoursError } =
-          await supabase
-            .from("business_hours")
-            .select(
-              "id, business_id, day_of_week, opens_at, closes_at, is_closed"
-            )
-            .eq("business_id", businessId)
-            .order("day_of_week");
+        if (!hoursResponse.ok) {
+          throw new Error(
+            hoursResult.error || "Unable to load opening hours.",
+          );
+        }
 
-        if (hoursError) throw hoursError;
+        if (!businessResult.business) {
+          throw new Error(
+            "The server did not return your business information.",
+          );
+        }
 
-        if (cancelled) return;
+        setBusinessName(businessResult.business.name);
 
-        setBusinessName(business.name);
-
-        const existingHours = (hours ?? []) as BusinessHours[];
+        const savedHours = hoursResult.hours ?? [];
         const defaults = createDefaultSchedule();
 
-        const updatedSchedule = defaults.map((day) => {
-          const existing = existingHours.find(
-            (item) => item.day_of_week === day.day_of_week
+        const mergedSchedule = defaults.map((day) => {
+          const savedDay = savedHours.find(
+            (hour) => hour.day_of_week === day.day_of_week,
           );
 
-          if (!existing) return day;
+          if (!savedDay) return day;
 
           return {
             ...day,
-            existingId: existing.id,
-            opens_at:
-              normalizeTime(existing.opens_at) || "09:00",
-            closes_at:
-              normalizeTime(existing.closes_at) || "17:00",
-            is_closed: existing.is_closed,
+            opens_at: normalizeTime(savedDay.opens_at) || "09:00",
+            closes_at: normalizeTime(savedDay.closes_at) || "17:00",
+            is_closed: savedDay.is_closed,
           };
         });
 
-        setSchedule(updatedSchedule);
-      } catch (error) {
-        if (!cancelled) {
-          console.error("Unable to load business hours:", error);
+        setSchedule(mergedSchedule);
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name === "AbortError") {
+          return;
+        }
 
+        if (!signal.aborted) {
           setErrorMessage(
             error instanceof Error
               ? error.message
-              : "Unable to load business hours."
+              : "Unable to load opening hours.",
           );
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!signal.aborted) {
+          setLoading(false);
+        }
       }
-    }
+    },
+    [businessId, router],
+  );
 
-    void initialize();
+  useEffect(() => {
+    const controller = new AbortController();
+
+    // Schedule the initial state updates outside the effect's synchronous
+    // execution to avoid React's set-state-in-effect lint warning.
+    const timer = window.setTimeout(() => {
+      void loadHours(controller.signal);
+    }, 0);
 
     return () => {
-      cancelled = true;
+      window.clearTimeout(timer);
+      controller.abort();
     };
-  }, [businessId, router]);
+  }, [loadHours, reloadKey]);
 
   function updateDay(
     dayOfWeek: number,
-    changes: Partial<DaySchedule>
+    changes: Partial<DaySchedule>,
   ) {
     setSchedule((current) =>
       current.map((day) =>
         day.day_of_week === dayOfWeek
           ? { ...day, ...changes }
-          : day
-      )
+          : day,
+      ),
     );
 
     setErrorMessage("");
     setSuccessMessage("");
+  }
+
+  function validateSchedule(): string | null {
+    if (schedule.length !== 7) {
+      return "Please configure all seven days of the week.";
+    }
+
+    const dayNumbers = new Set(
+      schedule.map((day) => day.day_of_week),
+    );
+
+    if (
+      dayNumbers.size !== 7 ||
+      DAYS.some(
+        (_, index) => !dayNumbers.has(index),
+      )
+    ) {
+      return "The weekly schedule is incomplete. Reload the page and try again.";
+    }
+
+    for (const day of schedule) {
+      if (day.is_closed) continue;
+
+      if (!day.opens_at || !day.closes_at) {
+        return `Select opening and closing times for ${day.day}.`;
+      }
+
+      if (day.opens_at === day.closes_at) {
+        return `${day.day}: opening and closing times cannot be the same.`;
+      }
+    }
+
+    return null;
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -189,122 +272,61 @@ export default function BusinessHoursPage() {
     setErrorMessage("");
     setSuccessMessage("");
 
-    for (const day of schedule) {
-      if (day.is_closed) continue;
+    const validationError = validateSchedule();
 
-      if (!day.opens_at || !day.closes_at) {
-        setErrorMessage(
-          `Please select opening and closing times for ${day.day}.`
-        );
-        return;
-      }
-
-      if (day.opens_at === day.closes_at) {
-        setErrorMessage(
-          `${day.day}: opening and closing times cannot be the same.`
-        );
-        return;
-      }
+    if (validationError) {
+      setErrorMessage(validationError);
+      return;
     }
 
     setSaving(true);
 
     try {
-      const supabase = createClient();
+      const response = await fetch(
+        `/api/businesses/${encodeURIComponent(businessId)}/hours`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            hours: schedule.map((day) => ({
+              day_of_week: day.day_of_week,
+              opens_at: day.is_closed ? null : day.opens_at,
+              closes_at: day.is_closed ? null : day.closes_at,
+              is_closed: day.is_closed,
+            })),
+          }),
+        },
+      );
 
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser();
+      const result = await readResponse(response);
 
-      if (authError) throw authError;
-
-      if (!user) {
-        router.replace("/login");
+      if (response.status === 401) {
+        router.replace(
+          `/login?redirectTo=${encodeURIComponent(
+            `/dashboard/businesses/${businessId}/hours`,
+          )}`,
+        );
         return;
       }
 
-      // Confirm ownership before writing any opening hours.
-      const { data: business, error: businessError } =
-        await supabase
-          .from("businesses")
-          .select("id")
-          .eq("id", businessId)
-          .eq("owner_user_id", user.id)
-          .maybeSingle();
-
-      if (businessError) throw businessError;
-
-      if (!business) {
+      if (!response.ok) {
         throw new Error(
-          "You do not have permission to update this business."
+          result.error || "Unable to save opening hours.",
         );
       }
 
-      // Save each day separately so this does not depend on a
-      // composite upsert constraint being present.
-      for (const day of schedule) {
-        const values = {
-          business_id: businessId,
-          day_of_week: day.day_of_week,
-          opens_at: day.is_closed ? null : day.opens_at,
-          closes_at: day.is_closed ? null : day.closes_at,
-          is_closed: day.is_closed,
-        };
-
-        if (day.existingId) {
-          const { error } = await supabase
-            .from("business_hours")
-            .update(values)
-            .eq("id", day.existingId)
-            .eq("business_id", businessId);
-
-          if (error) throw error;
-        } else {
-          const { error } = await supabase
-            .from("business_hours")
-            .insert(values);
-
-          if (error) throw error;
-        }
-      }
-
-      setSuccessMessage("Your business hours have been saved.");
-
-      // Refresh the page data and retrieve any newly created row IDs.
-      router.refresh();
-
-      const { data: savedHours, error: reloadError } =
-        await supabase
-          .from("business_hours")
-          .select(
-            "id, business_id, day_of_week, opens_at, closes_at, is_closed"
-          )
-          .eq("business_id", businessId)
-          .order("day_of_week");
-
-      if (reloadError) throw reloadError;
-
-      const saved = (savedHours ?? []) as BusinessHours[];
-
-      setSchedule((current) =>
-        current.map((day) => {
-          const record = saved.find(
-            (item) => item.day_of_week === day.day_of_week
-          );
-
-          return record
-            ? { ...day, existingId: record.id }
-            : day;
-        })
+      setSuccessMessage(
+        result.message || "Opening hours saved successfully.",
       );
-    } catch (error) {
-      console.error("Unable to save business hours:", error);
 
+      router.refresh();
+    } catch (error: unknown) {
       setErrorMessage(
         error instanceof Error
           ? error.message
-          : "Unable to save business hours."
+          : "An unexpected error occurred while saving opening hours.",
       );
     } finally {
       setSaving(false);
@@ -313,48 +335,103 @@ export default function BusinessHoursPage() {
 
   if (loading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#faf8f5]">
-        <LoaderCircle className="mr-3 h-5 w-5 animate-spin" />
-        Loading business hours...
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <div className="text-center">
+          <LoaderCircle
+            className="mx-auto h-9 w-9 animate-spin text-orange-500"
+            aria-hidden="true"
+          />
+          <p className="mt-4 font-semibold text-slate-800">
+            Loading opening hours...
+          </p>
+          <p className="mt-1 text-sm text-slate-500">
+            Please wait while we retrieve your weekly schedule.
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  if (errorMessage && !businessName) {
+    return (
+      <main className="min-h-screen bg-slate-50 px-4 py-12">
+        <div className="mx-auto max-w-xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+          <AlertCircle
+            className="h-10 w-10 text-red-500"
+            aria-hidden="true"
+          />
+
+          <h1 className="mt-4 text-2xl font-extrabold text-[#0B132B]">
+            Unable to load opening hours
+          </h1>
+
+          <p role="alert" className="mt-3 text-sm leading-6 text-red-700">
+            {errorMessage}
+          </p>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => setReloadKey((current) => current + 1)}
+              className="rounded-xl bg-[#0B132B] px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
+            >
+              Try again
+            </button>
+
+            <Link
+              href="/dashboard/businesses"
+              className="rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              My businesses
+            </Link>
+          </div>
+        </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-[#faf8f5] px-4 py-10 sm:px-6">
-      <div className="mx-auto max-w-3xl">
+    <main className="min-h-screen bg-slate-50 px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-4xl">
         <Link
-          href="/dashboard"
-          className="mb-8 inline-flex items-center gap-2 text-sm font-semibold text-stone-600 hover:text-[#75452e]"
+          href={`/dashboard/businesses/${encodeURIComponent(businessId)}/edit`}
+          className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 transition hover:text-orange-600"
         >
-          <ArrowLeft className="h-4 w-4" />
-          Back to dashboard
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          Back to edit business
         </Link>
 
-        <header className="mb-8">
-          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#efe3d9] text-[#75452e]">
-            <Clock3 className="h-7 w-7" />
+        <header className="mb-8 mt-6">
+          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-100 text-amber-800">
+            <Clock3 className="h-7 w-7" aria-hidden="true" />
           </div>
 
-          <h1 className="text-3xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
-            Business opening hours
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-orange-600">
+            HabeshaSpot Business Dashboard
+          </p>
+
+          <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-[#0B132B] sm:text-4xl">
+            Opening hours
           </h1>
 
-          <p className="mt-3 text-stone-600">
-            Set the weekly opening schedule for{" "}
-            <span className="font-bold text-stone-900">
+          <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
+            Set the weekly schedule for{" "}
+            <span className="font-bold text-slate-900">
               {businessName}
             </span>
-            .
+            . Customers can use these hours to plan their visit.
           </p>
         </header>
 
         {errorMessage && (
           <div
             role="alert"
-            className="mb-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+            className="mb-6 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm leading-6 text-red-800"
           >
-            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+            <AlertCircle
+              className="mt-0.5 h-5 w-5 shrink-0"
+              aria-hidden="true"
+            />
             <p>{errorMessage}</p>
           </div>
         )}
@@ -362,128 +439,164 @@ export default function BusinessHoursPage() {
         {successMessage && (
           <div
             role="status"
-            className="mb-6 flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800"
+            className="mb-6 flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-800"
           >
-            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
+            <CheckCircle2
+              className="mt-0.5 h-5 w-5 shrink-0"
+              aria-hidden="true"
+            />
             <p>{successMessage}</p>
           </div>
         )}
 
         <form
           onSubmit={handleSubmit}
-          className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm sm:p-8"
+          className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-8"
         >
-          <div className="mb-6">
-            <h2 className="text-lg font-bold text-stone-900">
-              Weekly schedule
-            </h2>
+          <div className="mb-6 flex items-start gap-3">
+            <CalendarDays
+              className="mt-1 h-5 w-5 text-orange-500"
+              aria-hidden="true"
+            />
 
-            <p className="mt-1 text-sm text-stone-500">
-              Choose the opening and closing time for each day.
-            </p>
+            <div>
+              <h2 className="text-lg font-bold text-[#0B132B]">
+                Weekly schedule
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                Set opening and closing times for each day. Mark a day
+                as closed when your business does not operate.
+              </p>
+            </div>
           </div>
 
-          <div className="divide-y divide-stone-100">
+          <div className="space-y-4">
             {schedule.map((day) => (
-              <div
+              <section
                 key={day.day_of_week}
-                className="grid gap-4 py-5 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-center"
+                className="rounded-xl border border-slate-200 p-4 transition hover:border-slate-300 sm:p-5"
               >
-                <div>
-                  <p className="font-semibold text-stone-900">
-                    {day.day}
-                  </p>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-sm font-bold ${
+                        day.is_closed
+                          ? "bg-slate-100 text-slate-500"
+                          : "bg-emerald-50 text-emerald-700"
+                      }`}
+                    >
+                      {day.day.slice(0, 2)}
+                    </div>
 
-                  <p className="mt-1 text-xs text-stone-500">
-                    {day.is_closed ? "Closed" : "Open"}
-                  </p>
-                </div>
+                    <div>
+                      <h3 className="font-bold text-slate-900">
+                        {day.day}
+                      </h3>
 
-                <div>
-                  <label
-                    htmlFor={`open-${day.day_of_week}`}
-                    className="mb-1 block text-xs font-semibold text-stone-500"
-                  >
-                    Opens
+                      <p className="mt-1 text-xs text-slate-500">
+                        {day.is_closed
+                          ? "Closed"
+                          : `${day.opens_at} – ${day.closes_at}`}
+                      </p>
+                    </div>
+                  </div>
+
+                  <label className="inline-flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={day.is_closed}
+                      disabled={saving}
+                      onChange={(event) =>
+                        updateDay(day.day_of_week, {
+                          is_closed: event.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 rounded border-slate-300 accent-orange-600 focus:ring-orange-500"
+                    />
+                    Closed all day
                   </label>
-
-                  <input
-                    id={`open-${day.day_of_week}`}
-                    type="time"
-                    value={day.opens_at}
-                    disabled={day.is_closed || saving}
-                    onChange={(event) =>
-                      updateDay(day.day_of_week, {
-                        opens_at: event.target.value,
-                      })
-                    }
-                    className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm disabled:bg-stone-100 disabled:text-stone-400"
-                  />
                 </div>
 
-                <div>
-                  <label
-                    htmlFor={`close-${day.day_of_week}`}
-                    className="mb-1 block text-xs font-semibold text-stone-500"
-                  >
-                    Closes
-                  </label>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor={`opens-${day.day_of_week}`}
+                      className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-500"
+                    >
+                      Opening time
+                    </label>
 
-                  <input
-                    id={`close-${day.day_of_week}`}
-                    type="time"
-                    value={day.closes_at}
-                    disabled={day.is_closed || saving}
-                    onChange={(event) =>
-                      updateDay(day.day_of_week, {
-                        closes_at: event.target.value,
-                      })
-                    }
-                    className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm disabled:bg-stone-100 disabled:text-stone-400"
-                  />
+                    <input
+                      id={`opens-${day.day_of_week}`}
+                      type="time"
+                      value={day.opens_at}
+                      disabled={saving || day.is_closed}
+                      onChange={(event) =>
+                        updateDay(day.day_of_week, {
+                          opens_at: event.target.value,
+                        })
+                      }
+                      className={inputClassName}
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor={`closes-${day.day_of_week}`}
+                      className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-500"
+                    >
+                      Closing time
+                    </label>
+
+                    <input
+                      id={`closes-${day.day_of_week}`}
+                      type="time"
+                      value={day.closes_at}
+                      disabled={saving || day.is_closed}
+                      onChange={(event) =>
+                        updateDay(day.day_of_week, {
+                          closes_at: event.target.value,
+                        })
+                      }
+                      className={inputClassName}
+                    />
+                  </div>
                 </div>
-
-                <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
-                  <input
-                    type="checkbox"
-                    checked={day.is_closed}
-                    disabled={saving}
-                    onChange={(event) =>
-                      updateDay(day.day_of_week, {
-                        is_closed: event.target.checked,
-                      })
-                    }
-                    className="h-4 w-4 rounded border-stone-300 accent-[#75452e]"
-                  />
-                  Closed
-                </label>
-              </div>
+              </section>
             ))}
           </div>
 
-          <div className="mt-6 flex flex-wrap gap-3 border-t border-stone-100 pt-6">
+          <div className="mt-8 flex flex-col-reverse gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:items-center sm:justify-between">
+            <Link
+              href={`/dashboard/businesses/${encodeURIComponent(businessId)}/edit`}
+              className="inline-flex min-h-12 items-center justify-center rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              Cancel
+            </Link>
+
             <button
               type="submit"
               disabled={saving}
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-[#75452e] px-6 py-3 font-bold text-white transition hover:bg-[#593321] disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#FF6B00] px-6 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-orange-700 focus:outline-none focus:ring-4 focus:ring-orange-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
+                <LoaderCircle
+                  className="h-4 w-4 animate-spin"
+                  aria-hidden="true"
+                />
               ) : (
-                <Save className="h-4 w-4" />
+                <Save className="h-4 w-4" aria-hidden="true" />
               )}
 
               {saving ? "Saving hours..." : "Save opening hours"}
             </button>
-
-            <Link
-              href="/dashboard"
-              className="inline-flex items-center justify-center rounded-full border border-stone-300 px-6 py-3 font-semibold text-stone-700 hover:bg-stone-50"
-            >
-              Cancel
-            </Link>
           </div>
         </form>
+
+        <p className="mt-5 text-center text-xs leading-5 text-slate-500">
+          Only enter hours that reflect your actual business schedule.
+          You can update them whenever your opening times change.
+        </p>
       </div>
     </main>
   );

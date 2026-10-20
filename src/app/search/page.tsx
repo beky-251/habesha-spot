@@ -1,23 +1,24 @@
 import Link from "next/link";
 import {
-  ArrowLeft,
+  ArrowRight,
   ChevronLeft,
   ChevronRight,
   Image as ImageIcon,
   MapPin,
   Search,
+  SlidersHorizontal,
   Star,
   Store,
 } from "lucide-react";
+
+import SiteHeader from "@/components/site-header";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata = {
   title: "Find Local Businesses | HabeshaSpot",
   description:
-    "Discover restaurants, coffee houses, hotels, shops, and local businesses across Ethiopia.",
+    "Discover cafes, restaurants, hotels, bakeries, and local businesses across Ethiopia.",
 };
-
-export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 12;
 
@@ -41,68 +42,101 @@ type City = {
   slug: string;
 };
 
+type RelatedCategory = {
+  name: string;
+  slug: string;
+};
+
+type RelatedCity = {
+  name: string;
+  slug: string;
+};
+
+type BusinessPhoto = {
+  business_id: string;
+  storage_path: string;
+  sort_order: number | null;
+  is_cover: boolean | null;
+};
+
 type Business = {
   id: string;
   name: string;
   slug: string;
   description: string | null;
   address: string | null;
-  average_rating: number;
-  review_count: number;
+  average_rating: number | null;
+  review_count: number | null;
   created_at: string;
-  categories: {
-    name: string;
-    slug: string;
-  } | null;
-  cities: {
-    name: string;
-    slug: string;
-  } | null;
+  categories: RelatedCategory | RelatedCategory[] | null;
+  cities: RelatedCity | RelatedCity[] | null;
   photo_url: string | null;
 };
 
-type BusinessPhoto = {
-  business_id: string;
-  storage_path: string;
-  sort_order: number;
-  is_cover: boolean;
-};
-
-const ALLOWED_SORTS = [
+const SORT_OPTIONS = [
   "recommended",
   "rating",
   "newest",
   "name",
 ] as const;
 
-type SortOption = (typeof ALLOWED_SORTS)[number];
+type SortOption = (typeof SORT_OPTIONS)[number];
+
+const SORT_LABELS: Record<SortOption, string> = {
+  recommended: "Recommended",
+  rating: "Highest rated",
+  newest: "Newest",
+  name: "Name: A–Z",
+};
+
+function isSortOption(value: string): value is SortOption {
+  return SORT_OPTIONS.some((option) => option === value);
+}
+
+function getSafePage(value?: string): number {
+  const page = Number(value);
+
+  if (!Number.isSafeInteger(page) || page < 1) {
+    return 1;
+  }
+
+  return Math.min(page, 1_000_000);
+}
 
 function getSingleRelation<T>(
-  value: T | T[] | null
+  value: T | T[] | null | undefined
 ): T | null {
   if (Array.isArray(value)) {
     return value[0] ?? null;
   }
 
-  return value;
-}
-
-function isValidSort(value: string): value is SortOption {
-  return ALLOWED_SORTS.some((option) => option === value);
+  return value ?? null;
 }
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
-function getSafePage(value?: string): number {
-  const parsed = Number(value);
+function buildPageHref(
+  pageNumber: number,
+  query: string,
+  city: string,
+  category: string,
+  sort: SortOption
+): string {
+  const params = new URLSearchParams();
 
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    return 1;
+  if (query) params.set("q", query);
+  if (city) params.set("city", city);
+  if (category) params.set("category", category);
+
+  if (sort !== "recommended") {
+    params.set("sort", sort);
   }
 
-  return Math.min(parsed, 1_000_000);
+  params.set("page", String(pageNumber));
+
+  return `/search?${params.toString()}`;
 }
 
 export default async function SearchPage({
@@ -113,14 +147,13 @@ export default async function SearchPage({
   const params = await searchParams;
 
   const query = (params.q ?? "").trim().slice(0, 100);
-  const selectedCity = (params.city ?? "").slice(0, 100);
-  const selectedCategory = (params.category ?? "").slice(
-    0,
-    100
-  );
+  const selectedCity = (params.city ?? "").trim().slice(0, 100);
+  const selectedCategory = (params.category ?? "")
+    .trim()
+    .slice(0, 100);
 
   const sort: SortOption =
-    params.sort && isValidSort(params.sort)
+    params.sort && isSortOption(params.sort)
       ? params.sort
       : "recommended";
 
@@ -139,37 +172,41 @@ export default async function SearchPage({
   let errorMessage: string | null = null;
 
   try {
-    // Load categories and cities for the search filters.
-    const [categoriesResult, citiesResult] =
-      await Promise.all([
-        supabase
-          .from("categories")
-          .select("id, name, slug")
-          .eq("is_active", true)
-          .order("name"),
+    // Load the real category and city options.
+    const [categoriesResult, citiesResult] = await Promise.all([
+      supabase
+        .from("categories")
+        .select("id, name, slug")
+        .eq("is_active", true)
+        .order("name"),
 
-        supabase
-          .from("cities")
-          .select("id, name, slug")
-          .eq("is_active", true)
-          .order("name"),
-      ]);
+      supabase
+        .from("cities")
+        .select("id, name, slug")
+        .eq("is_active", true)
+        .order("name"),
+    ]);
 
-    if (categoriesResult.error || citiesResult.error) {
+    if (categoriesResult.error) {
       console.error(
-        "Search filters failed:",
-        categoriesResult.error?.message,
-        citiesResult.error?.message
+        "Could not load search categories:",
+        categoriesResult.error.message
       );
+      throw new Error("Search categories could not be loaded.");
+    }
 
-      throw new Error("Unable to load search filters.");
+    if (citiesResult.error) {
+      console.error(
+        "Could not load search cities:",
+        citiesResult.error.message
+      );
+      throw new Error("Search cities could not be loaded.");
     }
 
     categories = categoriesResult.data ?? [];
     cities = citiesResult.data ?? [];
 
-    // Build the filtered and sorted business query.
-    // Count matching businesses before applying pagination.
+    // Create a filtered query for approved businesses only.
     const createBusinessQuery = (pageNumber: number) => {
       const from = (pageNumber - 1) * PAGE_SIZE;
       const to = from + PAGE_SIZE - 1;
@@ -199,17 +236,13 @@ export default async function SearchPage({
         )
         .eq("status", "approved");
 
-      // Search business names.
       if (query) {
-        const escapedQuery = escapeLikePattern(query);
-
         businessQuery = businessQuery.ilike(
           "name",
-          `%${escapedQuery}%`
+          `%${escapeLikePattern(query)}%`
         );
       }
 
-      // Filter by city.
       if (selectedCity) {
         businessQuery = businessQuery.eq(
           "cities.slug",
@@ -217,7 +250,6 @@ export default async function SearchPage({
         );
       }
 
-      // Filter by category.
       if (selectedCategory) {
         businessQuery = businessQuery.eq(
           "categories.slug",
@@ -225,104 +257,75 @@ export default async function SearchPage({
         );
       }
 
-      // Apply sorting.
       if (sort === "rating") {
         businessQuery = businessQuery
           .order("average_rating", {
             ascending: false,
             nullsFirst: false,
           })
-          .order("name", {
-            ascending: true,
-          });
+          .order("name", { ascending: true });
       } else if (sort === "newest") {
         businessQuery = businessQuery
-          .order("created_at", {
-            ascending: false,
-          })
-          .order("name", {
-            ascending: true,
-          });
+          .order("created_at", { ascending: false })
+          .order("name", { ascending: true });
       } else {
-        // Recommended currently uses alphabetical ordering.
-        // Name A-Z uses the same ordering.
         businessQuery = businessQuery.order("name", {
           ascending: true,
         });
       }
 
-      // Return only the requested page.
       return businessQuery.range(from, to);
     };
 
-    // Load the requested page and get the exact matching count.
-    let businessesResult =
-      await createBusinessQuery(requestedPage);
+    let businessResult = await createBusinessQuery(requestedPage);
 
-    if (businessesResult.error) {
+    if (businessResult.error) {
       console.error(
         "Business search failed:",
-        businessesResult.error.message
+        businessResult.error.message
       );
-
-      throw new Error("Unable to load businesses.");
+      throw new Error("Businesses could not be loaded.");
     }
 
-    totalCount = businessesResult.count ?? 0;
+    totalCount = businessResult.count ?? 0;
     totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
-    // Use page 1 when there are no results.
-    // Otherwise, keep the requested page within the valid range.
     currentPage =
       totalPages === 0
         ? 1
         : Math.min(requestedPage, totalPages);
 
-    // If the requested page is beyond the last page,
-    // fetch the last available page instead.
-    if (
-      totalPages > 0 &&
-      currentPage !== requestedPage
-    ) {
-      businessesResult =
-        await createBusinessQuery(currentPage);
+    // If someone requests a page beyond the last page, use the last page.
+    if (currentPage !== requestedPage && totalPages > 0) {
+      businessResult = await createBusinessQuery(currentPage);
 
-      if (businessesResult.error) {
+      if (businessResult.error) {
         console.error(
           "Business pagination failed:",
-          businessesResult.error.message
+          businessResult.error.message
         );
-
-        throw new Error("Unable to load businesses.");
+        throw new Error("Business results could not be loaded.");
       }
     }
 
-    const businessRows: Business[] = (
-      businessesResult.data ?? []
+    const businessRows = (
+      (businessResult.data ?? []) as unknown as Omit<
+        Business,
+        "photo_url"
+      >[]
     ).map((business) => ({
       ...business,
-      average_rating: Number(
-        business.average_rating ?? 0
-      ),
-      review_count: Number(
-        business.review_count ?? 0
-      ),
-      categories: getSingleRelation(
-        business.categories
-      ),
+      average_rating: Number(business.average_rating ?? 0),
+      review_count: Number(business.review_count ?? 0),
+      categories: getSingleRelation(business.categories),
       cities: getSingleRelation(business.cities),
-      photo_url: null,
+      photo_url: null as string | null,
     }));
 
-    // Load photos for the businesses on this page only.
-    const businessIds = businessRows.map(
-      (business) => business.id
-    );
+    // Fetch photos only for businesses on the current page.
+    const businessIds = businessRows.map((business) => business.id);
 
-    const photosByBusiness = new Map<
-      string,
-      BusinessPhoto[]
-    >();
+    const photosByBusiness = new Map<string, BusinessPhoto[]>();
 
     if (businessIds.length > 0) {
       const photosResult = await supabase
@@ -331,89 +334,71 @@ export default async function SearchPage({
           "business_id, storage_path, sort_order, is_cover"
         )
         .in("business_id", businessIds)
-        .order("sort_order", {
-          ascending: true,
-        });
+        .order("sort_order", { ascending: true });
 
       if (photosResult.error) {
-        // Photo failures should not hide business listings.
+        // A photo problem should not hide otherwise valid businesses.
         console.error(
           "Business photos could not be loaded:",
           photosResult.error.message
         );
       } else {
-        const photos =
-          (photosResult.data ?? []) as BusinessPhoto[];
+        const photos = (photosResult.data ?? []) as BusinessPhoto[];
 
         for (const photo of photos) {
-          const existing =
-            photosByBusiness.get(photo.business_id) ?? [];
+          const existing = photosByBusiness.get(photo.business_id) ?? [];
 
           existing.push(photo);
-
-          photosByBusiness.set(
-            photo.business_id,
-            existing
-          );
+          photosByBusiness.set(photo.business_id, existing);
         }
       }
     }
 
-    // Generate signed URLs from the private Storage bucket.
+    // The business-photos bucket is private, so generate temporary URLs.
     businesses = await Promise.all(
-      businessRows.map(
-        async (business): Promise<Business> => {
-          const photos = [
-            ...(photosByBusiness.get(business.id) ?? []),
-          ].sort((a, b) => {
-            if (a.is_cover !== b.is_cover) {
-              return a.is_cover ? -1 : 1;
-            }
-
-            return a.sort_order - b.sort_order;
-          });
-
-          let photoUrl: string | null = null;
-
-          for (const photo of photos) {
-            if (!photo.storage_path) {
-              continue;
-            }
-
-            const { data, error } =
-              await supabase.storage
-                .from("business-photos")
-                .createSignedUrl(
-                  photo.storage_path,
-                  3600
-                );
-
-            if (error || !data?.signedUrl) {
-              console.error(
-                `Could not generate photo URL for ${business.name}:`,
-                error?.message ?? "No signed URL returned"
-              );
-
-              // Try the next photo if this one fails.
-              continue;
-            }
-
-            photoUrl = data.signedUrl;
-            break;
+      businessRows.map(async (business): Promise<Business> => {
+        const photos = [
+          ...(photosByBusiness.get(business.id) ?? []),
+        ].sort((a, b) => {
+          if (a.is_cover !== b.is_cover) {
+            return a.is_cover ? -1 : 1;
           }
 
-          return {
-            ...business,
-            photo_url: photoUrl,
-          };
+          return (a.sort_order ?? 0) - (b.sort_order ?? 0);
+        });
+
+        let photoUrl: string | null = null;
+
+        for (const photo of photos) {
+          if (!photo.storage_path) continue;
+
+          const { data, error } = await supabase.storage
+            .from("business-photos")
+            .createSignedUrl(photo.storage_path, 3600);
+
+          if (error || !data?.signedUrl) {
+            console.error(
+              "Could not generate a business photo URL:",
+              error?.message
+            );
+            continue;
+          }
+
+          photoUrl = data.signedUrl;
+          break;
         }
-      )
+
+        return {
+          ...business,
+          photo_url: photoUrl,
+        };
+      })
     );
   } catch (error) {
     console.error("Search page error:", error);
 
     errorMessage =
-      "We couldn't load businesses right now. Please try again.";
+      "We couldn't load search results right now. Please try again.";
   }
 
   const hasFilters = Boolean(
@@ -423,39 +408,6 @@ export default async function SearchPage({
   const hasActiveOptions =
     hasFilters || sort !== "recommended";
 
-  const sortLabels: Record<SortOption, string> = {
-    recommended: "Recommended",
-    rating: "Highest rated",
-    newest: "Newest",
-    name: "Name: A–Z",
-  };
-
-  // Build pagination links while preserving current filters.
-  function buildPageHref(pageNumber: number): string {
-    const search = new URLSearchParams();
-
-    if (query) {
-      search.set("q", query);
-    }
-
-    if (selectedCity) {
-      search.set("city", selectedCity);
-    }
-
-    if (selectedCategory) {
-      search.set("category", selectedCategory);
-    }
-
-    if (sort !== "recommended") {
-      search.set("sort", sort);
-    }
-
-    search.set("page", String(pageNumber));
-
-    return `/search?${search.toString()}`;
-  }
-
-  // Show the first page, last page, and pages near the current page.
   const visiblePages = Array.from(
     new Set(
       [
@@ -464,276 +416,238 @@ export default async function SearchPage({
         currentPage,
         currentPage + 1,
         totalPages,
-      ].filter(
-        (pageNumber) =>
-          pageNumber >= 1 &&
-          pageNumber <= totalPages
-      )
+      ].filter((page) => page >= 1 && page <= totalPages)
     )
   ).sort((a, b) => a - b);
 
   const resultStart =
-    totalCount === 0
-      ? 0
-      : (currentPage - 1) * PAGE_SIZE + 1;
+    totalCount === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
 
-  const resultEnd = Math.min(
-    currentPage * PAGE_SIZE,
-    totalCount
-  );
+  const resultEnd = Math.min(currentPage * PAGE_SIZE, totalCount);
 
   return (
-    <main className="min-h-screen bg-[#faf8f5] text-[#29231f]">
-      {/* Navigation */}
-      <header className="border-b border-[#eae2da] bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <Link href="/" className="flex items-center gap-2">
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#75452e] text-white">
-              <MapPin size={22} />
-            </span>
-
-            <span className="text-xl font-extrabold">
-              HabeshaSpot
-            </span>
-          </Link>
-
-          <Link
-            href="/"
-            className="inline-flex items-center gap-2 text-sm font-semibold text-[#75452e] hover:underline"
-          >
-            <ArrowLeft size={17} />
-            Home
-          </Link>
-        </div>
-      </header>
+    <main className="min-h-screen bg-[#F8FAFC] text-[#0B132B]">
+      <SiteHeader />
 
       {/* Search hero */}
-      <section className="bg-[#75452e] px-5 py-12 text-white sm:px-8 sm:py-16">
-        <div className="mx-auto max-w-7xl">
-          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-white/70">
-            Discover local, love local
+      <section className="relative overflow-hidden bg-[#0B132B] px-5 py-12 text-white sm:px-8 sm:py-16">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-24 -top-24 h-80 w-80 rounded-full bg-[#FFB300]/10 blur-3xl"
+        />
+
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-32 left-1/4 h-72 w-72 rounded-full bg-[#FF6B00]/10 blur-3xl"
+        />
+
+        <div className="relative mx-auto max-w-7xl">
+          <p className="text-sm font-bold uppercase tracking-[0.2em] text-[#FFB300]">
+            Discover. Eat. Explore.
           </p>
 
-          <h1 className="mt-3 text-3xl font-extrabold sm:text-5xl">
+          <h1 className="mt-4 max-w-3xl text-3xl font-extrabold tracking-tight sm:text-5xl">
             Find your next favorite spot.
           </h1>
 
-          <p className="mt-4 max-w-2xl leading-7 text-white/80">
-            Search local businesses and discover places worth
-            visiting across Ethiopia.
+          <p className="mt-4 max-w-2xl text-base leading-7 text-white/75 sm:text-lg">
+            Discover cafes, restaurants, bakeries, hotels, and local
+            places worth visiting across Ethiopia.
           </p>
 
           <form
             action="/search"
             method="GET"
-            className="mt-8 grid gap-3 rounded-2xl bg-white p-4 shadow-xl md:grid-cols-[minmax(0,1fr)_200px_200px_auto]"
+            className="mt-8 grid gap-3 rounded-2xl border border-white/10 bg-white p-3 shadow-2xl sm:p-4 md:grid-cols-[minmax(0,1fr)_190px_190px_auto]"
           >
-            {/* Preserve sorting when changing search filters. */}
             {sort !== "recommended" && (
-              <input
-                type="hidden"
-                name="sort"
-                value={sort}
-              />
+              <input type="hidden" name="sort" value={sort} />
             )}
 
-            <label className="flex min-w-0 items-center gap-3 rounded-xl border border-gray-200 px-3">
+            <label className="flex min-w-0 items-center gap-3 rounded-xl border border-[#DCE3ED] bg-white px-4">
               <Search
                 size={20}
-                className="shrink-0 text-[#75452e]"
+                aria-hidden="true"
+                className="shrink-0 text-[#64748B]"
               />
 
+              <span className="sr-only">Search businesses</span>
+
               <input
-                name="q"
                 type="search"
+                name="q"
                 defaultValue={query}
                 maxLength={100}
-                placeholder="Search businesses..."
-                aria-label="Search by business name"
-                className="min-w-0 flex-1 py-3 text-sm text-gray-900 outline-none"
+                placeholder="Business name..."
+                className="min-w-0 flex-1 bg-transparent py-3 text-sm text-[#0B132B] outline-none placeholder:text-[#64748B]"
               />
             </label>
 
-            <select
-              name="category"
-              defaultValue={selectedCategory}
-              aria-label="Filter by category"
-              className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700 outline-none focus:border-[#75452e]"
-            >
-              <option value="">All categories</option>
+            <label className="flex items-center gap-2 rounded-xl border border-[#DCE3ED] bg-white px-3">
+              <MapPin
+                size={18}
+                aria-hidden="true"
+                className="shrink-0 text-[#64748B]"
+              />
 
-              {categories.map((category) => (
-                <option
-                  key={category.id}
-                  value={category.slug}
-                >
-                  {category.name}
-                </option>
-              ))}
-            </select>
+              <span className="sr-only">Filter by city</span>
 
-            <select
-              name="city"
-              defaultValue={selectedCity}
-              aria-label="Filter by city"
-              className="rounded-xl border border-gray-200 bg-white px-3 py-3 text-sm text-gray-700 outline-none focus:border-[#75452e]"
-            >
-              <option value="">All cities</option>
+              <select
+                name="city"
+                defaultValue={selectedCity}
+                className="min-w-0 flex-1 bg-transparent py-3 text-sm text-[#0B132B] outline-none"
+              >
+                <option value="">All cities</option>
 
-              {cities.map((city) => (
-                <option key={city.id} value={city.slug}>
-                  {city.name}
-                </option>
-              ))}
-            </select>
+                {cities.map((city) => (
+                  <option key={city.id} value={city.slug}>
+                    {city.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="flex items-center gap-2 rounded-xl border border-[#DCE3ED] bg-white px-3">
+              <Store
+                size={18}
+                aria-hidden="true"
+                className="shrink-0 text-[#64748B]"
+              />
+
+              <span className="sr-only">Filter by category</span>
+
+              <select
+                name="category"
+                defaultValue={selectedCategory}
+                className="min-w-0 flex-1 bg-transparent py-3 text-sm text-[#0B132B] outline-none"
+              >
+                <option value="">All categories</option>
+
+                {categories.map((category) => (
+                  <option key={category.id} value={category.slug}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             <button
               type="submit"
-              className="flex items-center justify-center gap-2 rounded-xl bg-[#477454] px-6 py-3 font-semibold text-white transition hover:bg-[#365c40]"
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#FFB300] px-6 py-3 font-bold text-[#0B132B] transition hover:bg-[#FFD166] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#FFB300]"
             >
-              <Search size={18} />
+              <Search size={18} aria-hidden="true" />
               Search
             </button>
           </form>
         </div>
       </section>
 
-      {/* Business results */}
-      <section className="mx-auto max-w-7xl px-5 py-12 sm:px-8">
-        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+      {/* Search results */}
+      <section className="mx-auto max-w-7xl px-5 py-10 sm:px-8 sm:py-14">
+        <div className="flex flex-col gap-5 border-b border-[#DCE3ED] pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-2xl font-extrabold">
-              {query
-                ? `Results for "${query}"`
-                : "Explore businesses"}
+            <p className="text-sm font-semibold text-[#64748B]">
+              {hasFilters ? "Search results" : "Explore Ethiopia"}
+            </p>
+
+            <h2 className="mt-2 text-2xl font-extrabold tracking-tight sm:text-3xl">
+              {query ? `Results for “${query}”` : "Discover local spots"}
             </h2>
 
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-sm leading-6 text-[#64748B]">
               {errorMessage
-                ? "Search is temporarily unavailable."
-                : totalCount === 0
-                  ? "0 businesses found"
-                  : `Showing ${resultStart}–${resultEnd} of ${totalCount} ${
-                      totalCount === 1
-                        ? "business"
-                        : "businesses"
-                    }`}
+                ? "We couldn't retrieve the results."
+                : `${totalCount} approved ${
+                    totalCount === 1 ? "business" : "businesses"
+                  } found`}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Sorting */}
-            <form
-              action="/search"
-              method="GET"
-              className="flex flex-wrap items-center gap-2"
-            >
-              {query && (
-                <input
-                  type="hidden"
-                  name="q"
-                  value={query}
-                />
-              )}
-
-              {selectedCity && (
-                <input
-                  type="hidden"
-                  name="city"
-                  value={selectedCity}
-                />
-              )}
-
-              {selectedCategory && (
-                <input
-                  type="hidden"
-                  name="category"
-                  value={selectedCategory}
-                />
-              )}
-
-              <label
-                htmlFor="sort"
-                className="text-sm font-medium text-gray-600"
-              >
-                Sort by
-              </label>
-
-              <select
-                id="sort"
-                name="sort"
-                defaultValue={sort}
-                className="rounded-xl border border-[#eae2da] bg-white px-3 py-2.5 text-sm outline-none focus:border-[#75452e]"
-              >
-                <option value="recommended">
-                  Recommended
-                </option>
-
-                <option value="rating">
-                  Highest rated
-                </option>
-
-                <option value="newest">
-                  Newest
-                </option>
-
-                <option value="name">
-                  Name: A–Z
-                </option>
-              </select>
-
-              <button
-                type="submit"
-                className="rounded-xl bg-[#75452e] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#593321]"
-              >
-                Apply
-              </button>
-            </form>
-
-            {hasActiveOptions && (
-              <Link
-                href="/search"
-                className="text-sm font-semibold text-[#75452e] hover:underline"
-              >
-                Clear filters
-              </Link>
+          <form
+            action="/search"
+            method="GET"
+            className="flex flex-wrap items-center gap-2"
+          >
+            {query && <input type="hidden" name="q" value={query} />}
+            {selectedCity && (
+              <input type="hidden" name="city" value={selectedCity} />
             )}
-          </div>
+            {selectedCategory && (
+              <input
+                type="hidden"
+                name="category"
+                value={selectedCategory}
+              />
+            )}
+
+            <label
+              htmlFor="sort"
+              className="inline-flex items-center gap-2 text-sm font-semibold text-[#64748B]"
+            >
+              <SlidersHorizontal size={17} aria-hidden="true" />
+              Sort by
+            </label>
+
+            <select
+              id="sort"
+              name="sort"
+              defaultValue={sort}
+              className="rounded-xl border border-[#DCE3ED] bg-white px-3 py-2.5 text-sm text-[#0B132B] outline-none focus:border-[#FFB300] focus:ring-2 focus:ring-[#FFB300]/20"
+            >
+              {SORT_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {SORT_LABELS[option]}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="submit"
+              className="rounded-xl border border-[#DCE3ED] bg-white px-4 py-2.5 text-sm font-bold text-[#0B132B] transition hover:bg-[#F1F5F9]"
+            >
+              Apply
+            </button>
+          </form>
         </div>
 
-        {/* Current search summary */}
-        {(hasFilters || sort !== "recommended") && (
-          <div className="mt-5 flex flex-wrap gap-2">
+        {/* Active filters */}
+        {hasActiveOptions && (
+          <div className="mt-5 flex flex-wrap items-center gap-2">
             {query && (
-              <span className="rounded-full bg-[#efe3d9] px-3 py-1.5 text-sm text-[#75452e]">
+              <span className="rounded-full border border-[#DCE3ED] bg-white px-3 py-1.5 text-sm text-[#334155]">
                 Search: {query}
               </span>
             )}
 
             {selectedCategory && (
-              <span className="rounded-full bg-[#efe3d9] px-3 py-1.5 text-sm text-[#75452e]">
+              <span className="rounded-full border border-[#DCE3ED] bg-white px-3 py-1.5 text-sm text-[#334155]">
                 Category:{" "}
                 {categories.find(
-                  (category) =>
-                    category.slug === selectedCategory
+                  (category) => category.slug === selectedCategory
                 )?.name ?? selectedCategory}
               </span>
             )}
 
             {selectedCity && (
-              <span className="rounded-full bg-[#efe3d9] px-3 py-1.5 text-sm text-[#75452e]">
+              <span className="rounded-full border border-[#DCE3ED] bg-white px-3 py-1.5 text-sm text-[#334155]">
                 City:{" "}
-                {cities.find(
-                  (city) => city.slug === selectedCity
-                )?.name ?? selectedCity}
+                {cities.find((city) => city.slug === selectedCity)?.name ??
+                  selectedCity}
               </span>
             )}
 
             {sort !== "recommended" && (
-              <span className="rounded-full bg-[#efe3d9] px-3 py-1.5 text-sm text-[#75452e]">
-                Sort: {sortLabels[sort]}
+              <span className="rounded-full border border-[#DCE3ED] bg-white px-3 py-1.5 text-sm text-[#334155]">
+                Sort: {SORT_LABELS[sort]}
               </span>
             )}
+
+            <Link
+              href="/search"
+              className="ml-1 text-sm font-bold text-[#0B132B] underline decoration-[#FFB300] decoration-2 underline-offset-4 hover:text-[#FF6B00]"
+            >
+              Clear filters
+            </Link>
           </div>
         )}
 
@@ -743,49 +657,45 @@ export default async function SearchPage({
             role="alert"
             className="mt-8 rounded-2xl border border-red-200 bg-red-50 p-6 text-red-800"
           >
-            <p className="font-semibold">
-              Unable to load search results
-            </p>
+            <h3 className="font-bold">Unable to load search results</h3>
 
-            <p className="mt-2 text-sm">
-              {errorMessage}
-            </p>
+            <p className="mt-2 text-sm leading-6">{errorMessage}</p>
 
             <Link
               href="/search"
-              className="mt-4 inline-flex font-semibold underline"
+              className="mt-4 inline-flex font-bold underline underline-offset-4"
             >
               Try again
             </Link>
           </div>
         ) : businesses.length === 0 ? (
           /* Empty state */
-          <div className="mt-8 rounded-2xl border border-[#eae2da] bg-white px-6 py-16 text-center">
-            <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[#efe3d9] text-[#75452e]">
-              <Store size={30} />
+          <div className="mt-8 rounded-3xl border border-[#DCE3ED] bg-white px-6 py-16 text-center shadow-sm">
+            <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[#FFF4D6] text-[#0B132B]">
+              <Store size={30} aria-hidden="true" />
             </span>
 
-            <h3 className="mt-5 text-xl font-bold">
+            <h3 className="mt-5 text-xl font-extrabold">
               No businesses found
             </h3>
 
-            <p className="mx-auto mt-3 max-w-md leading-7 text-gray-600">
-              Try another search or remove some filters.
-              Approved businesses will appear here as they are
-              added to HabeshaSpot.
+            <p className="mx-auto mt-3 max-w-md text-sm leading-7 text-[#64748B]">
+              Try another search or remove some filters. Approved businesses
+              will appear here as they are added to HabeshaSpot.
             </p>
 
             <Link
               href="/search"
-              className="mt-6 inline-flex rounded-xl bg-[#75452e] px-5 py-3 font-semibold text-white hover:bg-[#593321]"
+              className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-[#0B132B] px-5 py-3 font-bold text-white transition hover:bg-[#101D35]"
             >
               Clear search
+              <ArrowRight size={17} aria-hidden="true" />
             </Link>
 
             <div>
               <Link
                 href="/business"
-                className="mt-4 inline-flex text-sm font-semibold text-[#75452e] hover:underline"
+                className="mt-4 inline-flex text-sm font-bold text-[#0B132B] underline decoration-[#FFB300] decoration-2 underline-offset-4 hover:text-[#FF6B00]"
               >
                 Add a business
               </Link>
@@ -793,114 +703,123 @@ export default async function SearchPage({
           </div>
         ) : (
           <>
-            {/* Business grid */}
-            <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {businesses.map((business) => (
-                <article
-                  key={business.id}
-                  className="group flex flex-col overflow-hidden rounded-2xl border border-[#eae2da] bg-white transition hover:-translate-y-1 hover:shadow-lg"
-                >
-                  {/* Cover photo */}
-                  <Link
-                    href={`/business/${encodeURIComponent(
-                      business.slug
-                    )}`}
-                    aria-label={`View ${business.name}`}
-                    className="relative block h-56 overflow-hidden bg-[#efe3d9]"
+            <p className="mt-6 text-sm text-[#64748B]">
+              Showing {resultStart}–{resultEnd} of {totalCount} businesses
+            </p>
+
+            {/* Business cards */}
+            <div className="mt-5 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              {businesses.map((business) => {
+                const category = getSingleRelation(business.categories);
+                const city = getSingleRelation(business.cities);
+
+                const rating = Number(business.average_rating ?? 0);
+                const reviewCount = Number(business.review_count ?? 0);
+
+                const businessHref = `/business/${encodeURIComponent(
+                  business.slug
+                )}`;
+
+                return (
+                  <article
+                    key={business.id}
+                    className="group flex flex-col overflow-hidden rounded-2xl border border-[#DCE3ED] bg-white shadow-sm transition duration-200 hover:-translate-y-1 hover:shadow-xl"
                   >
-                    {business.photo_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={business.photo_url}
-                        alt={`${business.name} cover photo`}
-                        className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
-                      />
-                    ) : (
-                      <div className="flex h-full flex-col items-center justify-center gap-3 text-[#75452e]">
-                        <ImageIcon
-                          size={42}
-                          strokeWidth={1.5}
+                    <Link
+                      href={businessHref}
+                      aria-label={`View ${business.name}`}
+                      className="relative block h-56 overflow-hidden bg-[#EAF0F7]"
+                    >
+                      {business.photo_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={business.photo_url}
+                          alt={`${business.name} cover`}
+                          loading="lazy"
+                          className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
                         />
-
-                        <span className="text-sm font-medium">
-                          No photo available
-                        </span>
-                      </div>
-                    )}
-
-                    <span className="absolute left-3 top-3 rounded-full bg-white/95 px-3 py-1.5 text-xs font-semibold text-[#75452e] shadow-sm">
-                      {business.categories?.name ??
-                        "Local business"}
-                    </span>
-                  </Link>
-
-                  {/* Business information */}
-                  <div className="flex flex-1 flex-col p-5">
-                    <div className="flex-1">
-                      <h3 className="text-xl font-bold transition group-hover:text-[#75452e]">
-                        <Link
-                          href={`/business/${encodeURIComponent(
-                            business.slug
-                          )}`}
-                        >
-                          {business.name}
-                        </Link>
-                      </h3>
-
-                      {business.cities && (
-                        <p className="mt-2 flex items-start gap-2 text-sm text-gray-500">
-                          <MapPin
-                            size={16}
-                            className="mt-0.5 shrink-0"
+                      ) : (
+                        <div className="flex h-full flex-col items-center justify-center gap-3 text-[#64748B]">
+                          <ImageIcon
+                            size={40}
+                            strokeWidth={1.5}
+                            aria-hidden="true"
                           />
 
-                          <span>
-                            {business.cities.name}
-                            {business.address
-                              ? ` · ${business.address}`
-                              : ""}
+                          <span className="text-sm font-medium">
+                            No photo available
                           </span>
-                        </p>
+                        </div>
                       )}
 
-                      {business.description && (
-                        <p className="mt-4 line-clamp-3 text-sm leading-6 text-gray-600">
-                          {business.description}
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Rating and details */}
-                    <div className="mt-5 flex items-center justify-between border-t border-gray-100 pt-4">
-                      <span className="inline-flex items-center gap-1 text-sm font-semibold">
-                        <Star
-                          size={17}
-                          className="fill-amber-400 text-amber-500"
-                        />
-
-                        {business.review_count > 0
-                          ? business.average_rating.toFixed(1)
-                          : "New"}
-
-                        {business.review_count > 0 && (
-                          <span className="font-normal text-gray-500">
-                            ({business.review_count})
-                          </span>
-                        )}
+                      <span className="absolute left-3 top-3 max-w-[calc(100%-1.5rem)] truncate rounded-full border border-white/60 bg-white/95 px-3 py-1.5 text-xs font-bold text-[#0B132B] shadow-sm">
+                        {category?.name ?? "Local business"}
                       </span>
+                    </Link>
 
-                      <Link
-                        href={`/business/${encodeURIComponent(
-                          business.slug
-                        )}`}
-                        className="font-semibold text-[#75452e] hover:underline"
-                      >
-                        View details →
-                      </Link>
+                    <div className="flex flex-1 flex-col p-5">
+                      <div className="flex-1">
+                        <h3 className="text-xl font-extrabold tracking-tight">
+                          <Link
+                            href={businessHref}
+                            className="transition hover:text-[#FF6B00] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#FFB300]"
+                          >
+                            {business.name}
+                          </Link>
+                        </h3>
+
+                        {(city || business.address) && (
+                          <p className="mt-2 flex items-start gap-2 text-sm leading-6 text-[#64748B]">
+                            <MapPin
+                              size={16}
+                              aria-hidden="true"
+                              className="mt-1 shrink-0"
+                            />
+
+                            <span>
+                              {city?.name}
+                              {city && business.address ? " · " : ""}
+                              {business.address}
+                            </span>
+                          </p>
+                        )}
+
+                        {business.description && (
+                          <p className="mt-4 line-clamp-3 text-sm leading-6 text-[#64748B]">
+                            {business.description}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="mt-5 flex items-center justify-between gap-3 border-t border-[#EAF0F7] pt-4">
+                        <span className="inline-flex items-center gap-1.5 text-sm font-bold text-[#0B132B]">
+                          <Star
+                            size={17}
+                            aria-hidden="true"
+                            className="fill-[#FFB300] text-[#FFB300]"
+                          />
+
+                          {reviewCount > 0 ? rating.toFixed(1) : "New"}
+
+                          {reviewCount > 0 && (
+                            <span className="font-normal text-[#64748B]">
+                              ({reviewCount})
+                            </span>
+                          )}
+                        </span>
+
+                        <Link
+                          href={businessHref}
+                          className="inline-flex shrink-0 items-center gap-1 text-sm font-bold text-[#0B132B] transition hover:text-[#FF6B00]"
+                        >
+                          View details
+                          <ArrowRight size={16} aria-hidden="true" />
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
 
             {/* Pagination */}
@@ -909,37 +828,39 @@ export default async function SearchPage({
                 aria-label="Business results pages"
                 className="mt-12 flex flex-col items-center gap-4"
               >
-                <p className="text-sm text-gray-600">
+                <p className="text-sm text-[#64748B]">
                   Page {currentPage} of {totalPages}
                 </p>
 
                 <div className="flex flex-wrap items-center justify-center gap-2">
-                  {/* Previous page */}
                   {currentPage > 1 ? (
                     <Link
-                      href={buildPageHref(currentPage - 1)}
+                      href={buildPageHref(
+                        currentPage - 1,
+                        query,
+                        selectedCity,
+                        selectedCategory,
+                        sort
+                      )}
                       rel="prev"
                       aria-label="Previous page"
-                      className="inline-flex items-center gap-1 rounded-xl border border-[#eae2da] bg-white px-3 py-2.5 text-sm font-semibold text-[#75452e] transition hover:bg-[#efe3d9]"
+                      className="inline-flex items-center gap-1 rounded-xl border border-[#DCE3ED] bg-white px-3 py-2.5 text-sm font-bold text-[#0B132B] transition hover:bg-[#F1F5F9]"
                     >
-                      <ChevronLeft size={18} />
-                      <span>Previous</span>
+                      <ChevronLeft size={18} aria-hidden="true" />
+                      Previous
                     </Link>
                   ) : (
                     <span
                       aria-disabled="true"
-                      className="inline-flex cursor-not-allowed items-center gap-1 rounded-xl border border-gray-200 bg-gray-100 px-3 py-2.5 text-sm text-gray-400"
+                      className="inline-flex cursor-not-allowed items-center gap-1 rounded-xl border border-[#DCE3ED] bg-[#F1F5F9] px-3 py-2.5 text-sm text-[#94A3B8]"
                     >
-                      <ChevronLeft size={18} />
-                      <span>Previous</span>
+                      <ChevronLeft size={18} aria-hidden="true" />
+                      Previous
                     </span>
                   )}
 
-                  {/* Numbered pages */}
                   {visiblePages.map((pageNumber, index) => {
-                    const previousPage =
-                      visiblePages[index - 1];
-
+                    const previousPage = visiblePages[index - 1];
                     const needsEllipsis =
                       previousPage !== undefined &&
                       pageNumber - previousPage > 1;
@@ -952,24 +873,28 @@ export default async function SearchPage({
                         {needsEllipsis && (
                           <span
                             aria-hidden="true"
-                            className="px-1 text-gray-400"
+                            className="px-1 text-[#94A3B8]"
                           >
                             …
                           </span>
                         )}
 
                         <Link
-                          href={buildPageHref(pageNumber)}
+                          href={buildPageHref(
+                            pageNumber,
+                            query,
+                            selectedCity,
+                            selectedCategory,
+                            sort
+                          )}
                           aria-label={`Page ${pageNumber}`}
                           aria-current={
-                            pageNumber === currentPage
-                              ? "page"
-                              : undefined
+                            pageNumber === currentPage ? "page" : undefined
                           }
-                          className={`flex h-10 min-w-10 items-center justify-center rounded-xl border px-3 text-sm font-semibold transition ${
+                          className={`flex h-10 min-w-10 items-center justify-center rounded-xl border px-3 text-sm font-bold transition ${
                             pageNumber === currentPage
-                              ? "border-[#75452e] bg-[#75452e] text-white"
-                              : "border-[#eae2da] bg-white text-[#75452e] hover:bg-[#efe3d9]"
+                              ? "border-[#0B132B] bg-[#0B132B] text-white"
+                              : "border-[#DCE3ED] bg-white text-[#0B132B] hover:border-[#FFB300] hover:bg-[#FFF9E8]"
                           }`}
                         >
                           {pageNumber}
@@ -978,24 +903,29 @@ export default async function SearchPage({
                     );
                   })}
 
-                  {/* Next page */}
                   {currentPage < totalPages ? (
                     <Link
-                      href={buildPageHref(currentPage + 1)}
+                      href={buildPageHref(
+                        currentPage + 1,
+                        query,
+                        selectedCity,
+                        selectedCategory,
+                        sort
+                      )}
                       rel="next"
                       aria-label="Next page"
-                      className="inline-flex items-center gap-1 rounded-xl border border-[#eae2da] bg-white px-3 py-2.5 text-sm font-semibold text-[#75452e] transition hover:bg-[#efe3d9]"
+                      className="inline-flex items-center gap-1 rounded-xl border border-[#DCE3ED] bg-white px-3 py-2.5 text-sm font-bold text-[#0B132B] transition hover:bg-[#F1F5F9]"
                     >
-                      <span>Next</span>
-                      <ChevronRight size={18} />
+                      Next
+                      <ChevronRight size={18} aria-hidden="true" />
                     </Link>
                   ) : (
                     <span
                       aria-disabled="true"
-                      className="inline-flex cursor-not-allowed items-center gap-1 rounded-xl border border-gray-200 bg-gray-100 px-3 py-2.5 text-sm text-gray-400"
+                      className="inline-flex cursor-not-allowed items-center gap-1 rounded-xl border border-[#DCE3ED] bg-[#F1F5F9] px-3 py-2.5 text-sm text-[#94A3B8]"
                     >
-                      <span>Next</span>
-                      <ChevronRight size={18} />
+                      Next
+                      <ChevronRight size={18} aria-hidden="true" />
                     </span>
                   )}
                 </div>
@@ -1005,10 +935,9 @@ export default async function SearchPage({
         )}
       </section>
 
-      {/* Footer */}
-      <footer className="mt-10 bg-[#29231f] px-5 py-8 text-center text-sm text-white/60">
-        © {new Date().getFullYear()} HabeshaSpot. Discover
-        local, love local.
+      <footer className="mt-8 border-t border-[#DCE3ED] bg-white px-5 py-8 text-center text-sm text-[#64748B]">
+        © {new Date().getFullYear()} HabeshaSpot. Discover Ethiopia, one spot
+        at a time.
       </footer>
     </main>
   );

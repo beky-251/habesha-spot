@@ -81,6 +81,7 @@ const supabase = useMemo(() => createClient(), []);
 const loadReviews = useCallback(async () => {
 setLoading(true);
 setError("");
+setNotice("");
 
 
 try {
@@ -196,6 +197,7 @@ return () => {
   window.clearTimeout(timer);
 };
 
+
 }, [loadReviews, reloadKey]);
 
 const filteredReviews = useMemo(() => {
@@ -235,14 +237,18 @@ setBusyReviewId(reviewId);
 setError("");
 setNotice("");
 
+
 try {
-  const response = await fetch(`/api/admin/reviews/${reviewId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
+  const response = await fetch(
+    `/api/admin/reviews/${encodeURIComponent(reviewId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ status }),
     },
-    body: JSON.stringify({ status }),
-  });
+  );
 
   const result: { error?: string; message?: string } =
     await response.json();
@@ -270,6 +276,53 @@ try {
 
 }
 
+async function deleteReview(reviewId: string) {
+const confirmed = window.confirm(
+"Are you sure you want to permanently delete this review? This action cannot be undone.",
+);
+
+if (!confirmed) {
+  return;
+}
+
+setBusyReviewId(reviewId);
+setError("");
+setNotice("");
+
+try {
+  const response = await fetch(
+    `/api/admin/reviews/${encodeURIComponent(reviewId)}`,
+    { method: "DELETE" },
+  );
+
+  const result: { error?: string; message?: string } =
+    await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.error ?? "Unable to delete this review.");
+  }
+
+  setReviews((currentReviews) =>
+    currentReviews.filter((review) => review.id !== reviewId),
+  );
+
+  setNotice(result.message ?? "Review deleted successfully.");
+} catch (caughtError) {
+  setError(
+    caughtError instanceof Error
+      ? caughtError.message
+      : "Unable to delete this review.",
+  );
+} finally {
+  setBusyReviewId(null);
+}
+
+}
+
+function refreshReviews() {
+setReloadKey((current) => current + 1);
+}
+
 if (loading) {
 return ( <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4"> <p className="text-sm font-medium text-gray-600">
 Loading reviews... </p> </main>
@@ -279,17 +332,13 @@ Loading reviews... </p> </main>
 if (!authorized) {
 return ( <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4"> <div className="max-w-md text-center"> <h1 className="text-xl font-bold text-gray-900">
 Unable to open reviews </h1>
-
       <p className="mt-2 text-sm text-gray-600">
         {error || "You may not have permission to access this page."}
       </p>
 
       <button
         type="button"
-        onClick={() => {
-          setLoading(true);
-          setReloadKey((current) => current + 1);
-        }}
+        onClick={refreshReviews}
         className="mt-5 rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700"
       >
         Try again
@@ -384,7 +433,10 @@ HabeshaSpot Administration </p>
           key={item.label}
           className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm"
         >
-          <p className="text-sm font-medium text-gray-500">{item.label}</p>
+          <p className="text-sm font-medium text-gray-500">
+            {item.label}
+          </p>
+
           <p className={`mt-2 text-3xl font-bold ${item.color}`}>
             {item.count}
           </p>
@@ -422,10 +474,7 @@ HabeshaSpot Administration </p>
 
             <button
               type="button"
-              onClick={() => {
-                setLoading(true);
-                setReloadKey((current) => current + 1);
-              }}
+              onClick={refreshReviews}
               className="rounded-lg border border-gray-300 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
             >
               Refresh
@@ -529,7 +578,9 @@ HabeshaSpot Administration </p>
                       }
                       className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {busyReviewId === review.id ? "Saving..." : "Approve"}
+                      {busyReviewId === review.id
+                        ? "Saving..."
+                        : "Approve"}
                     </button>
                   )}
 
@@ -542,9 +593,20 @@ HabeshaSpot Administration </p>
                       }
                       className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {busyReviewId === review.id ? "Saving..." : "Reject"}
+                      {busyReviewId === review.id
+                        ? "Saving..."
+                        : "Reject"}
                     </button>
                   )}
+
+                  <button
+                    type="button"
+                    disabled={busyReviewId === review.id}
+                    onClick={() => void deleteReview(review.id)}
+                    className="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busyReviewId === review.id ? "Saving..." : "Delete"}
+                  </button>
                 </div>
               </div>
             </article>
